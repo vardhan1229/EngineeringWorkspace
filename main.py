@@ -1149,7 +1149,7 @@ class EngineeringWorkspace(QMainWindow):
                     self.load_project_files(item)
                     break
             
-        QMessageBox.information(self, "Saved", "Settings updated successfully.")
+        QMessageBox.information(self, "Saved", "Setting updated successfully.")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
