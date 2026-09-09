@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Engineering Workspace</title>
+    <style>
+        :root {
+            /* Modern Professional Dark Theme */
+            --bg-base: #0f172a;       /* Slate 900 */
+            --bg-surface: #1e293b;    /* Slate 800 */
+            --bg-hover: #334155;      /* Slate 700 */
+            --primary: #38bdf8;       /* Light Blue */
+            --primary-hover: #0ea5e9;
+            --text-main: #f8fafc;     /* Slate 50 */
+            --text-muted: #94a3b8;    /* Slate 400 */
+            --border: #334155;
+            --success: #10b981;       /* Emerald */
+            --warning: #f59e0b;       /* Amber */
+            --danger: #ef4444;        /* Red */
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; }
+        
+        body { 
+            display: flex; height: 100vh; background-color: var(--bg-base); color: var(--text-main); overflow: hidden;
+        }
+
+        /* --- Scrollbars --- */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--bg-hover); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+        /* --- Sidebar --- */
+        .sidebar {
+            width: 260px; background-color: var(--bg-surface); border-right: 1px solid var(--border);
+            display: flex; flex-direction: column; padding: 24px 0; z-index: 10;
+        }
+        .app-title {
+            font-size: 20px; font-weight: 800; color: var(--text-main); text-align: left; 
+            padding: 0 24px 32px 24px; letter-spacing: 0.5px;
+        }
+        .app-title span { color: var(--primary); }
+        .nav-btn {
+            background: none; border: none; color: var(--text-muted); text-align: left; 
+            padding: 14px 24px; font-size: 15px; font-weight: 600; cursor: pointer; 
+            transition: all 0.2s; border-left: 3px solid transparent; display: flex; align-items: center; gap: 12px;
+        }
+        .nav-btn:hover { background-color: rgba(255,255,255,0.03); color: var(--text-main); }
+        .nav-btn.active { background-color: rgba(56, 189, 248, 0.1); border-left-color: var(--primary); color: var(--primary); }
+
+        /* --- Main Content Area --- */
+        .main-content { flex: 1; display: flex; flex-direction: column; overflow-y: auto; position: relative; }
+        .page { display: none; padding: 32px; animation: fadeIn 0.3s ease; max-width: 1400px; margin: 0 auto; width: 100%; }
+        .page.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* --- Components --- */
+        h2.section-title { font-size: 20px; font-weight: 600; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+        
+        .card { background-color: var(--bg-surface); border-radius: 12px; border: 1px solid var(--border); padding: 24px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        
+        .grid-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 24px; }
+        .grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+        
+        .btn {
+            background-color: var(--bg-hover); color: var(--text-main); border: 1px solid var(--border);
+            padding: 10px 16px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; transition: 0.2s;
+        }
+        .btn:hover { background-color: var(--border); }
+        .btn-primary { background-color: var(--primary); color: #000; border: none; font-weight: 600; }
+        .btn-primary:hover { background-color: var(--primary-hover); }
+
+        input, select, textarea {
+            width: 100%; padding: 10px 14px; background-color: var(--bg-base); color: var(--text-main);
+            border: 1px solid var(--border); border-radius: 6px; font-size: 14px; outline: none; transition: 0.2s;
+        }
+        input:focus, select:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2); }
+        
+        /* --- Specific Elements --- */
+        .project-card { cursor: pointer; transition: transform 0.2s, border-color 0.2s; }
+        .project-card:hover { transform: translateY(-2px); border-color: var(--primary); }
+        .project-card h3 { font-size: 16px; margin-bottom: 8px; }
+        .project-card .meta { font-size: 13px; color: var(--text-muted); display: flex; flex-direction: column; gap: 4px; }
+        
+        .task-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px; background: var(--bg-base); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; }
+        .task-row input[type="checkbox"] { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--primary); cursor: pointer; }
+        .task-content { flex: 1; }
+        .task-title { font-size: 15px; font-weight: 500; cursor: pointer; transition: 0.2s; }
+        .task-title:hover { color: var(--primary); }
+        .task-meta { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+        .task-row.completed .task-title { text-decoration: line-through; color: var(--text-muted); }
+
+        /* Split layouts */
+        .split-view { display: grid; grid-template-columns: 300px 1fr; gap: 24px; height: calc(100vh - 120px); }
+        .list-pane { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; overflow-y: auto; padding: 16px; }
+        .detail-pane { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; overflow-y: auto; padding: 32px; }
+        
+        .list-item { padding: 12px; border-radius: 6px; cursor: pointer; margin-bottom: 4px; font-size: 14px; }
+        .list-item:hover { background: var(--bg-hover); }
+        .list-item.selected { background: rgba(56, 189, 248, 0.1); color: var(--primary); font-weight: 600; }
+
+        /* --- Modals --- */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
+            display: none; justify-content: center; align-items: center; z-index: 100; opacity: 0; transition: opacity 0.2s;
+        }
+        .modal-overlay.open { display: flex; opacity: 1; }
+        .modal-content {
+            background: var(--bg-surface); width: 100%; max-width: 500px; border-radius: 12px; border: 1px solid var(--border);
+            padding: 32px; transform: scale(0.95); transition: transform 0.2s; max-height: 90vh; overflow-y: auto;
+        }
+        .modal-overlay.open .modal-content { transform: scale(1); }
+        .form-group { margin-bottom: 16px; }
+        .form-group label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 500; color: var(--text-muted); }
+        
+        /* Stats Cards */
+        .stat-card { padding: 20px; border-radius: 8px; border: 1px solid var(--border); text-align: center; }
+        .stat-card.pending { border-left: 4px solid var(--warning); }
+        .stat-card.completed { border-left: 4px solid var(--success); }
+        .stat-value { font-size: 28px; font-weight: bold; margin-top: 8px; }
+    </style>
+</head>
+<body>
+
+    <!-- SIDEBAR -->
+    <div class="sidebar">
+        <div class="app-title">ENG<span>WORKSPACE</span></div>
+        <button class="nav-btn active" onclick="app.switchTab('dashboard')">📊 Dashboard</button>
+        <button class="nav-btn" onclick="app.switchTab('projects')">📁 Projects</button>
+        <button class="nav-btn" onclick="app.switchTab('tasks')">✅ Tasks</button>
+        <div style="flex-grow: 1;"></div>
+        <button class="nav-btn" onclick="app.switchTab('settings')">⚙️ Settings</button>
+    </div>
+
+    <!-- MAIN CONTENT -->
+    <div class="main-content">
+        
+        <!-- DASHBOARD -->
+        <div id="dashboard" class="page active">
+            <div class="card" style="margin-bottom: 24px; background: linear-gradient(145deg, #1e293b, #0f172a); border-left: 4px solid var(--primary);">
+                <h1 style="font-size: 28px; font-weight: 700;" id="dash-greeting">Hello, Engineer.</h1>
+                <p style="color: var(--text-muted); margin-top: 8px;" id="dash-date">Loading date...</p>
+            </div>
+
+            <div class="grid-2">
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 12px;">
+                        <h2 style="font-size: 18px; font-weight: 600;">Active Projects</h2>
+                        <button class="btn btn-primary" style="padding: 6px 12px;" onclick="app.openProjectModal()">+ New</button>
+                    </div>
+                    <div class="grid-cards" id="dash-projects-container">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2 class="section-title">Today's Tasks</h2>
+                    <div id="dash-tasks-container">
+                        <!-- Populated by JS -->
+                    </div>
+                    <button class="btn" style="width: 100%; margin-top: 16px; border-style: dashed;" onclick="app.openTaskModal()">+ Add Task</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- PROJECTS -->
+        <div id="projects" class="page">
+            <div class="split-view">
+                <div class="list-pane">
+                    <h2 style="font-size: 16px; margin-bottom: 16px; color: var(--text-muted);">Project List</h2>
+                    <div id="projects-list-container">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+                <div class="detail-pane" id="project-detail-container">
+                    <div style="text-align: center; color: var(--text-muted); margin-top: 100px;">
+                        <p style="font-size: 40px; margin-bottom: 16px;">📁</p>
+                        <p>Select a project to view details</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TASKS -->
+        <div id="tasks" class="page">
+            <div class="split-view" style="grid-template-columns: 280px 1fr;">
+                <div class="list-pane">
+                    <h2 style="font-size: 16px; margin-bottom: 16px; color: var(--text-muted);">Select Date</h2>
+                    <input type="date" id="task-date-picker" style="margin-bottom: 24px;" onchange="app.renderTasksPage()">
+                    
+                    <div class="stat-card pending" style="margin-bottom: 16px;">
+                        <div style="font-size: 13px; color: var(--text-muted);">Pending Today</div>
+                        <div class="stat-value" id="stat-pending">0</div>
+                    </div>
+                    <div class="stat-card completed">
+                        <div style="font-size: 13px; color: var(--text-muted);">Completed Today</div>
+                        <div class="stat-value" id="stat-completed" style="color: var(--success);">0</div>
+                    </div>
+                </div>
+                
+                <div class="detail-pane" style="padding: 24px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+                        <h2 style="font-size: 18px; font-weight: 600;">Tasks</h2>
+                        <button class="btn btn-primary" onclick="app.openTaskModal()">+ New Task</button>
+                    </div>
+                    <div id="full-tasks-container">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SETTINGS -->
+        <div id="settings" class="page">
+            <div class="card" style="max-width: 800px; margin: 0 auto;">
+                <h2 class="section-title">System Settings</h2>
+                
+                <div class="form-group">
+                    <label>User Name (For Dashboard Greeting)</label>
+                    <input type="text" id="set-username">
+                </div>
+                
+                <div class="grid-2" style="margin-top: 24px; gap: 16px;">
+                    <div class="form-group">
+                        <label>Project Form Fields (Comma separated)</label>
+                        <textarea id="set-proj-fields" rows="4"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Task Form Fields (Comma separated)</label>
+                        <textarea id="set-task-fields" rows="4"></textarea>
+                    </div>
+                </div>
+                
+                <div class="form-group" style="margin-top: 16px;">
+                    <label>Dashboard Fields to Display (Comma separated, must match Project Fields)</label>
+                    <input type="text" id="set-dash-fields">
+                </div>
+
+                <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 12px;">
+                    <button class="btn btn-primary" onclick="app.saveSettings()">Save Configuration</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: Dynamic Form (Used for Projects & Tasks) -->
+    <div class="modal-overlay" id="dynamic-modal">
+        <div class="modal-content">
+            <h2 id="modal-title" style="margin-bottom: 20px;">Form</h2>
+            <div id="modal-form-body"></div>
+            <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border);">
+                <button class="btn" onclick="app.closeModal()">Cancel</button>
+                <button class="btn btn-primary" id="modal-save-btn">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        /**
+         * Engineering Workspace MVP
+         * Core Application Logic using LocalStorage
+         */
+        const app = {
+            data: {
+                settings: {
+                    user_name: "Engineer",
+                    project_fields: ["Project Description", "Client Name", "Complexity", "Priority"],
+                    dashboard_fields: ["Client Name", "Priority"],
+                    task_fields: ["Task Name", "Priority", "Project", "Notes"]
+                },
+                projects: [],
+                tasks: []
+            },
+            currentModalContext: null,
+
+            // --- INIT ---
+            init() {
+                this.loadData();
+                this.updateGreeting();
+                document.getElementById('task-date-picker').valueAsDate = new Date();
+                
+                this.renderDashboard();
+                this.renderProjectsPage();
+                this.renderTasksPage();
+                this.populateSettings();
+
+                // Close modal on outside click
+                document.getElementById('dynamic-modal').addEventListener('click', (e) => {
+                    if(e.target.id === 'dynamic-modal') this.closeModal();
+                });
+            },
+
+            loadData() {
+                const saved = localStorage.getItem('eng_workspace_db');
+                if (saved) {
+                    this.data = JSON.parse(saved);
+                } else {
+                    // Seed some dummy data for the MVP presentation
+                    this.data.projects = [
+                        { id: 'p1', name: 'Kaleshwaram Analysis', status: 'active', details: {"Client Name": "State Govt", "Priority": "High", "Complexity": "High"} }
+                    ];
+                    this.data.tasks = [
+                        { id: 't1', date: new Date().toISOString().split('T')[0], status: 'pending', details: {"Task Name": "Review initial CAD", "Priority": "High"} }
+                    ];
+                    this.saveData();
+                }
+            },
+
+            saveData() {
+                localStorage.setItem('eng_workspace_db', JSON.stringify(this.data));
+            },
+
+            // --- NAVIGATION ---
+            switchTab(tabId) {
+                document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+                document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+                
+                document.getElementById(tabId).classList.add('active');
+                event.currentTarget.classList.add('active');
+
+                if(tabId === 'dashboard') this.renderDashboard();
+                if(tabId === 'projects') this.renderProjectsPage();
+                if(tabId === 'tasks') this.renderTasksPage();
+            },
+
+            updateGreeting() {
+                const hour = new Date().getHours();
+                let g = hour < 12 ? "Good Morning" : hour < 17 ? "Good Afternoon" : "Good Evening";
+                document.getElementById('dash-greeting').innerText = `${g}, ${this.data.settings.user_name}.`;
+                document.getElementById('dash-date').innerText = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+            },
+
+            // --- DASHBOARD ---
+            renderDashboard() {
+                // Render Projects
+                const pContainer = document.getElementById('dash-projects-container');
+                pContainer.innerHTML = '';
+                const activeProjects = this.data.projects.filter(p => p.status === 'active');
+                
+                if (activeProjects.length === 0) {
+                    pContainer.innerHTML = `<p style="color:var(--text-muted);">No active projects.</p>`;
+                } else {
+                    activeProjects.forEach(p => {
+                        let fieldsHtml = '';
+                        this.data.settings.dashboard_fields.forEach(f => {
+                            if (p.details[f]) {
+                                fieldsHtml += `<div class="meta"><span>${f}</span> <strong style="color:var(--text-main);">${p.details[f]}</strong></div>`;
+                            }
+                        });
+                        
+                        pContainer.innerHTML += `
+                            <div class="card project-card" onclick="app.switchTab('projects'); app.selectProject('${p.id}')">
+                                <h3>${p.name}</h3>
+                                <div style="display:flex; flex-direction:column; gap:8px; margin-top:12px;">
+                                    ${fieldsHtml}
+                                </div>
+                            </div>
+                        `;
+                    });
+                }
+
+                // Render Tasks
+                const tContainer = document.getElementById('dash-tasks-container');
+                tContainer.innerHTML = '';
+                const today = new Date().toISOString().split('T')[0];
+                const todayTasks = this.data.tasks.filter(t => t.date === today);
+
+                if (todayTasks.length === 0) {
+                    tContainer.innerHTML = `<p style="color:var(--text-muted); font-size:14px;">No tasks scheduled for today.</p>`;
+                } else {
+                    todayTasks.forEach(t => {
+                        const isChecked = t.status === 'completed' ? 'checked' : '';
+                        const name = t.details["Task Name"] || "Unnamed Task";
+                        tContainer.innerHTML += `
+                            <div class="task-row ${t.status}">
+                                <input type="checkbox" ${isChecked} onclick="app.toggleTaskStatus('${t.id}', this.checked)">
+                                <div class="task-content">
+                                    <div class="task-title" onclick="app.switchTab('tasks')">${name}</div>
+                                    <div class="task-meta">${t.details["Priority"] ? 'Priority: ' + t.details["Priority"] : ''}</div>
+                                </div>
+                            </div>
+                        `;
+                    });
+                }
+            },
+
+            // --- PROJECTS ---
+            renderProjectsPage() {
+                const list = document.getElementById('projects-list-container');
+                list.innerHTML = '';
+                this.data.projects.forEach(p => {
+                    const statusColor = p.status === 'active' ? 'var(--success)' : 'var(--text-muted)';
+                    list.innerHTML += `
+                        <div class="list-item" onclick="app.selectProject('${p.id}')" id="list-proj-${p.id}">
+                            <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${statusColor}; margin-right:8px;"></span>
+                            ${p.name}
+                        </div>
+                    `;
+                });
+            },
+
+            selectProject(id) {
+                document.querySelectorAll('.list-item').forEach(el => el.classList.remove('selected'));
+                const listEl = document.getElementById(`list-proj-${id}`);
+                if(listEl) listEl.classList.add('selected');
+
+                const proj = this.data.projects.find(p => p.id === id);
+                const container = document.getElementById('project-detail-container');
+                
+                let detailsHtml = '';
+                for (const [k, v] of Object.entries(proj.details)) {
+                    detailsHtml += `
+                        <div style="margin-bottom:12px;">
+                            <div style="font-size:13px; color:var(--text-muted); margin-bottom:2px;">${k}</div>
+                            <div style="font-size:15px; font-weight:500;">${v || '-'}</div>
+                        </div>
+                    `;
+                }
+
+                container.innerHTML = `
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:24px; border-bottom:1px solid var(--border); padding-bottom:16px;">
+                        <div>
+                            <h2 style="font-size:24px; font-weight:700; margin-bottom:8px;">${proj.name}</h2>
+                            <span style="background:var(--bg-base); padding:4px 10px; border-radius:12px; font-size:12px; font-weight:600; text-transform:uppercase; border:1px solid var(--border);">
+                                ${proj.status}
+                            </span>
+                        </div>
+                        <button class="btn" onclick="app.openEditProjectModal('${proj.id}')">✏️ Edit</button>
+                    </div>
+                    <div class="grid-2">
+                        <div>
+                            <h3 style="font-size:16px; margin-bottom:16px; color:var(--primary);">Metadata</h3>
+                            ${detailsHtml}
+                        </div>
+                    </div>
+                `;
+            },
+
+            // --- TASKS ---
+            renderTasksPage() {
+                const dateStr = document.getElementById('task-date-picker').value;
+                const tasks = this.data.tasks.filter(t => t.date === dateStr);
+                
+                const pendingCount = tasks.filter(t => t.status === 'pending').length;
+                const completedCount = tasks.filter(t => t.status === 'completed').length;
+                
+                document.getElementById('stat-pending').innerText = pendingCount;
+                document.getElementById('stat-completed').innerText = completedCount;
+
+                const container = document.getElementById('full-tasks-container');
+                container.innerHTML = '';
+
+                if (tasks.length === 0) {
+                    container.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-muted);">No tasks found for this date.</div>`;
+                    return;
+                }
+
+                tasks.forEach(t => {
+                    const isChecked = t.status === 'completed' ? 'checked' : '';
+                    let detailsHtml = '';
+                    for (const [k, v] of Object.entries(t.details)) {
+                        if(k !== "Task Name" && v) {
+                            detailsHtml += `<span style="background:var(--bg-base); padding:2px 8px; border-radius:4px; border:1px solid var(--border);">${k}: ${v}</span> `;
+                        }
+                    }
+
+                    container.innerHTML += `
+                        <div class="card task-row ${t.status}" style="margin-bottom: 12px; background: var(--bg-surface);">
+                            <input type="checkbox" ${isChecked} onclick="app.toggleTaskStatus('${t.id}', this.checked); app.renderTasksPage();">
+                            <div class="task-content">
+                                <div class="task-title" style="font-size:16px; margin-bottom:8px;">${t.details["Task Name"]}</div>
+                                <div class="task-meta" style="display:flex; gap:8px; flex-wrap:wrap;">
+                                    ${detailsHtml}
+                                </div>
+                            </div>
+                            <button class="btn" style="color:var(--danger); border:none; background:none; padding:4px;" onclick="app.deleteTask('${t.id}')">🗑️</button>
+                        </div>
+                    `;
+                });
+            },
+
+            toggleTaskStatus(id, isCompleted) {
+                const task = this.data.tasks.find(t => t.id === id);
+                if (task) {
+                    task.status = isCompleted ? 'completed' : 'pending';
+                    this.saveData();
+                    // If we are currently on dashboard, refresh it
+                    if(document.getElementById('dashboard').classList.contains('active')) {
+                        this.renderDashboard();
+                    }
+                }
+            },
+            
+            deleteTask(id) {
+                if(confirm("Delete this task?")) {
+                    this.data.tasks = this.data.tasks.filter(t => t.id !== id);
+                    this.saveData();
+                    this.renderTasksPage();
+                }
+            },
+
+            // --- MODALS & FORMS ---
+            openModal(title, saveCallback) {
+                document.getElementById('modal-title').innerText = title;
+                const btn = document.getElementById('modal-save-btn');
+                btn.onclick = saveCallback;
+                document.getElementById('dynamic-modal').classList.add('open');
+            },
+            closeModal() {
+                document.getElementById('dynamic-modal').classList.remove('open');
+            },
+
+            generateFormHtml(fields, existingData = {}) {
+                let html = '';
+                fields.forEach(f => {
+                    const val = existingData[f] || '';
+                    if (f.toLowerCase().includes('priority') || f.toLowerCase().includes('complexity')) {
+                        const opts = ['High', 'Medium', 'Low'].map(o => `<option value="${o}" ${val===o?'selected':''}>${o}</option>`).join('');
+                        html += `<div class="form-group"><label>${f}</label><select id="field-${f}">${opts}</select></div>`;
+                    } else if (f.toLowerCase().includes('notes') || f.toLowerCase().includes('description')) {
+                        html += `<div class="form-group"><label>${f}</label><textarea id="field-${f}" rows="3">${val}</textarea></div>`;
+                    } else {
+                        html += `<div class="form-group"><label>${f}</label><input type="text" id="field-${f}" value="${val}"></div>`;
+                    }
+                });
+                return html;
+            },
+
+            extractFormData(fields) {
+                const data = {};
+                fields.forEach(f => {
+                    data[f] = document.getElementById(`field-${f}`).value;
+                });
+                return data;
+            },
+
+            openProjectModal() {
+                const body = document.getElementById('modal-form-body');
+                body.innerHTML = `
+                    <div class="form-group"><label>Project Name *</label><input type="text" id="proj-name"></div>
+                    ${this.generateFormHtml(this.data.settings.project_fields)}
+                `;
+                this.openModal("Create New Project", () => {
+                    const name = document.getElementById('proj-name').value;
+                    if(!name) return alert("Name is required");
+                    const details = this.extractFormData(this.data.settings.project_fields);
+                    
+                    const newProj = {
+                        id: 'p' + Date.now(),
+                        name: name,
+                        status: 'active',
+                        details: details,
+                        timeline: []
+                    };
+                    this.data.projects.push(newProj);
+                    this.saveData();
+                    this.closeModal();
+                    this.renderDashboard();
+                    this.renderProjectsPage();
+                });
+            },
+
+            openEditProjectModal(id) {
+                const proj = this.data.projects.find(p => p.id === id);
+                const body = document.getElementById('modal-form-body');
+                const statusOpts = ['active', 'hold', 'additional info', 'closed'].map(o => `<option value="${o}" ${proj.status===o?'selected':''}>${o.toUpperCase()}</option>`).join('');
+                
+                body.innerHTML = `
+                    <div class="form-group"><label>Status</label><select id="proj-status">${statusOpts}</select></div>
+                    ${this.generateFormHtml(this.data.settings.project_fields, proj.details)}
+                `;
+                this.openModal(`Edit: ${proj.name}`, () => {
+                    proj.status = document.getElementById('proj-status').value;
+                    proj.details = this.extractFormData(this.data.settings.project_fields);
+                    this.saveData();
+                    this.closeModal();
+                    this.renderDashboard();
+                    this.renderProjectsPage();
+                    this.selectProject(id);
+                });
+            },
+
+            openTaskModal() {
+                const body = document.getElementById('modal-form-body');
+                // Ensure Task Name is always present conceptually
+                const fields = [...new Set(["Task Name", ...this.data.settings.task_fields])];
+                
+                const projOpts = ['None'].concat(this.data.projects.map(p => p.name)).map(p => `<option>${p}</option>`).join('');
+                const dateStr = document.getElementById('task-date-picker').value || new Date().toISOString().split('T')[0];
+
+                body.innerHTML = `
+                    <div class="form-group"><label>Task Date</label><input type="date" id="task-date" value="${dateStr}"></div>
+                    ${this.generateFormHtml(fields)}
+                `;
+                
+                // If there's a project field generated, overwrite it with dynamic dropdown
+                const pField = document.getElementById('field-Project') || document.getElementById('field-Associated Project');
+                if(pField && pField.tagName === 'INPUT') {
+                    pField.outerHTML = `<select id="${pField.id}">${projOpts}</select>`;
+                }
+
+                this.openModal("Create New Task", () => {
+                    const date = document.getElementById('task-date').value;
+                    const details = this.extractFormData(fields);
+                    if(!details["Task Name"]) return alert("Task Name required");
+
+                    this.data.tasks.push({
+                        id: 't' + Date.now(),
+                        date: date,
+                        status: 'pending',
+                        details: details
+                    });
+                    this.saveData();
+                    this.closeModal();
+                    this.renderDashboard();
+                    
+                    // Auto switch to that date to see it
+                    document.getElementById('task-date-picker').value = date;
+                    this.renderTasksPage();
+                });
+            },
+
+            // --- SETTINGS ---
+            populateSettings() {
+                document.getElementById('set-username').value = this.data.settings.user_name;
+                document.getElementById('set-proj-fields').value = this.data.settings.project_fields.join(', ');
+                document.getElementById('set-task-fields').value = this.data.settings.task_fields.join(', ');
+                document.getElementById('set-dash-fields').value = this.data.settings.dashboard_fields.join(', ');
+            },
+
+            saveSettings() {
+                this.data.settings.user_name = document.getElementById('set-username').value;
+                this.data.settings.project_fields = document.getElementById('set-proj-fields').value.split(',').map(s=>s.trim()).filter(Boolean);
+                this.data.settings.task_fields = document.getElementById('set-task-fields').value.split(',').map(s=>s.trim()).filter(Boolean);
+                this.data.settings.dashboard_fields = document.getElementById('set-dash-fields').value.split(',').map(s=>s.trim()).filter(Boolean);
+                
+                this.saveData();
+                this.updateGreeting();
+                this.renderDashboard();
+                alert("Settings saved successfully!");
+            }
+        };
+
+        // Initialize App
+        document.addEventListener('DOMContentLoaded', () => {
+            app.init();
+        });
+    </script>
+</body>
+</html>
