@@ -25,8 +25,10 @@ def init_db():
     
     defaults = {
         'subfolders': ["01_CAD_UG_NX", "02_FEA_ANSYS", "03_Scripts", "04_Reports"],
-        'project_fields': ["Project Description", "Client Name", "Priority"],
+        'project_fields': ["Project Description", "Client Name", "Complexity", "Priority"],
         'dashboard_fields': ["Client Name", "Priority"],
+        'task_fields': ["Task Name", "Associated Project", "Notes"],
+        'quick_links': [],
         'main_path': "",
         'user_name': "Engineer"
     }
@@ -53,7 +55,7 @@ def update_setting(key, value):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     if key != 'main_path': value = json.dumps(value)
-    cursor.execute("UPDATE OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
     conn.commit()
     conn.close()
 

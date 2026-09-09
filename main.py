@@ -2,6 +2,7 @@ import sys
 import os
 import shutil
 import json
+from datetime import datetime
 import qdarktheme
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QListWidget, QTreeView, 
@@ -11,7 +12,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QScrollArea, QComboBox, QCalendarWidget, QGridLayout, QCheckBox, 
                              QListWidgetItem, QDateEdit, QTableWidget, QTableWidgetItem, QHeaderView, QStyledItemDelegate)
 from PyQt6.QtCore import Qt, QUrl, QTimer, QTime, QDate, pyqtSignal
-from PyQt6.QtGui import QFileSystemModel, QDesktopServices, QAction, QTextCharFormat, QColor, QPixmap
+from PyQt6.QtGui import QFileSystemModel, QDesktopServices, QAction, QTextCharFormat, QColor, QShortcut, QKeySequence
 import database
 
 class DoubleClickLabel(QLabel):
@@ -20,6 +21,21 @@ class DoubleClickLabel(QLabel):
         if event.button() == Qt.MouseButton.LeftButton:
             self.doubleClicked.emit()
         super().mouseDoubleClickEvent(event)
+
+class SelectableLabel(QLabel):
+    def __init__(self, text="", parent=None):
+        super().__init__(str(text), parent)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.show_menu)
+        self.setWordWrap(True)
+
+    def show_menu(self, pos):
+        menu = QMenu(self)
+        copy_action = QAction("📋 Copy", self)
+        copy_action.triggered.connect(lambda: QApplication.clipboard().setText(self.selectedText() if self.selectedText() else self.text()))
+        menu.addAction(copy_action)
+        menu.exec(self.mapToGlobal(pos))
 
 class ClickableFrame(QFrame):
     clicked = pyqtSignal(str)
@@ -49,10 +65,102 @@ class DateDelegate(QStyledItemDelegate):
     def setModelData(self, editor, model, index):
         model.setData(index, editor.date().toString("yyyy-MM-dd"), Qt.ItemDataRole.EditRole)
 
+class QuickLinkDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("🔗 Add Quick Link")
+        self.setMinimumWidth(450)
+        layout = QFormLayout(self)
+        
+        self.name_input = QLineEdit()
+        layout.addRow("<b>Link Name:</b>", self.name_input)
+        
+        self.path_input = QLineEdit()
+        path_layout = QHBoxLayout()
+        path_layout.setContentsMargins(0, 0, 0, 0)
+        path_layout.addWidget(self.path_input)
+        
+        btn_file = QPushButton("📄 File")
+        btn_file.clicked.connect(self.browse_file)
+        btn_dir = QPushButton("📁 Folder")
+        btn_dir.clicked.connect(self.browse_dir)
+        
+        path_layout.addWidget(btn_file)
+        path_layout.addWidget(btn_dir)
+        layout.addRow("<b>URL / Path:</b>", path_layout)
+        
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addRow(btn_box)
+
+    def browse_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select File")
+        if path: self.path_input.setText(path)
+
+    def browse_dir(self):
+        path = QFileDialog.getExistingDirectory(self, "Select Folder")
+        if path: self.path_input.setText(path)
+
+    def get_data(self):
+        return self.name_input.text().strip(), self.path_input.text().strip()
+
+class IterationDialog(QDialog):
+    def __init__(self, existing_data=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("🔄 Iteration Details")
+        self.setMinimumWidth(400)
+        self.layout = QFormLayout(self)
+        
+        self.cat_combo = QComboBox()
+        self.cat_combo.addItems(["Modeling", "Meshing", "FEA", "Post Processing"])
+        
+        self.iter_input = QLineEdit()
+        self.prev_input = QLineEdit()
+        
+        self.change_input = QTextEdit()
+        self.change_input.setMaximumHeight(80)
+        
+        self.status_combo = QComboBox()
+        self.status_combo.addItems(["WIP", "Under review", "Running", "Completed", "Archived"])
+        
+        self.result_combo = QComboBox()
+        self.result_combo.addItems(["Not Run", "Pass", "Fail"])
+        
+        self.layout.addRow("Category", self.cat_combo)
+        self.layout.addRow("Iteration count", self.iter_input)
+        self.layout.addRow("Previous version", self.prev_input)
+        self.layout.addRow("Current change", self.change_input)
+        self.layout.addRow("Status", self.status_combo)
+        self.layout.addRow("Result", self.result_combo)
+        
+        if existing_data:
+            self.cat_combo.setCurrentText(existing_data.get("Category", "Modeling"))
+            self.iter_input.setText(existing_data.get("Iteration count", ""))
+            self.prev_input.setText(existing_data.get("Previous version", ""))
+            self.change_input.setPlainText(existing_data.get("Current change", ""))
+            self.status_combo.setCurrentText(existing_data.get("Status", "WIP"))
+            self.result_combo.setCurrentText(existing_data.get("Result", "Not Run"))
+            
+        self.btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.btn_box.accepted.connect(self.accept)
+        self.btn_box.rejected.connect(self.reject)
+        self.layout.addRow(self.btn_box)
+        
+    def get_data(self):
+        return {
+            "Category": self.cat_combo.currentText(),
+            "Iteration count": self.iter_input.text().strip(),
+            "Previous version": self.prev_input.text().strip(),
+            "Current change": self.change_input.toPlainText().strip(),
+            "Status": self.status_combo.currentText(),
+            "Result": self.result_combo.currentText()
+        }
+
 class TimelineDialog(QDialog):
     def __init__(self, project_name, timeline_data, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Timeline: {project_name}")
+        self.setWindowTitle(f"🕒 Timeline: {project_name}")
         self.resize(750, 500)
         layout = QVBoxLayout(self)
 
@@ -75,9 +183,9 @@ class TimelineDialog(QDialog):
             self.add_row("", "")
 
         btn_layout = QHBoxLayout()
-        btn_add = QPushButton("+ Add Entry")
+        btn_add = QPushButton("➕ Add Entry")
         btn_add.clicked.connect(lambda: self.add_row("", ""))
-        btn_del = QPushButton("- Remove Selected Entry")
+        btn_del = QPushButton("❌ Remove Selected Entry")
         btn_del.clicked.connect(self.remove_row)
         btn_layout.addWidget(btn_add)
         btn_layout.addWidget(btn_del)
@@ -101,7 +209,7 @@ class TimelineDialog(QDialog):
     def handle_double_click(self, row, col):
         if col == 0: 
             dlg = QDialog(self)
-            dlg.setWindowTitle("Select Date")
+            dlg.setWindowTitle("📅 Select Date")
             dlg.resize(350, 250)
             dlg_layout = QVBoxLayout(dlg)
             
@@ -116,7 +224,7 @@ class TimelineDialog(QDialog):
                     
             dlg_layout.addWidget(cal)
             
-            btn_select = QPushButton("Select Date")
+            btn_select = QPushButton("✔️ Select Date")
             btn_select.clicked.connect(dlg.accept)
             dlg_layout.addWidget(btn_select)
             
@@ -161,14 +269,14 @@ class TaskTableDialog(QDialog):
             table.setItem(row_idx, 4, QTableWidgetItem(details.get("Project", "")))
             table.setItem(row_idx, 5, QTableWidgetItem(details.get("Notes", "")))
 
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton("❌ Close")
         btn_close.clicked.connect(self.accept)
         layout.addWidget(btn_close)
 
 class DynamicFormDialog(QDialog):
     def __init__(self, title, name_field_label, fields, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(title)
+        self.setWindowTitle(f"📝 {title}")
         self.setMinimumWidth(450)
         self.layout = QFormLayout(self)
         self.inputs = {}
@@ -177,7 +285,7 @@ class DynamicFormDialog(QDialog):
         self.layout.addRow(f"<b>{name_field_label} *</b>", self.name_input)
         
         for field in fields:
-            if "priority" in field.lower():
+            if "priority" in field.lower() or "complexity" in field.lower():
                 inp = QComboBox()
                 inp.addItems(["High", "Medium", "Low"])
             elif "description" in field.lower() or "notes" in field.lower():
@@ -208,7 +316,7 @@ class DynamicFormDialog(QDialog):
 class NewTaskDialog(QDialog):
     def __init__(self, default_date, project_names, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Create New Task")
+        self.setWindowTitle("➕ Create New Task")
         self.setMinimumWidth(450)
         self.layout = QFormLayout(self)
         
@@ -256,7 +364,7 @@ class NewTaskDialog(QDialog):
 class EditProjectDialog(QDialog):
     def __init__(self, project_name, current_status, details_dict, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Edit Project: {project_name}")
+        self.setWindowTitle(f"✏️ Edit Project: {project_name}")
         self.setMinimumWidth(450)
         self.layout = QFormLayout(self)
         self.inputs = {}
@@ -264,7 +372,6 @@ class EditProjectDialog(QDialog):
         self.status_combo = QComboBox()
         self.status_combo.addItems(["active", "hold", "additional info", "closed"])
         
-        # Select current status, handle exact match logic
         idx = self.status_combo.findText(current_status, Qt.MatchFlag.MatchFixedString | Qt.MatchFlag.MatchCaseSensitive)
         if idx >= 0: self.status_combo.setCurrentIndex(idx)
         else: self.status_combo.setCurrentText(current_status)
@@ -272,7 +379,8 @@ class EditProjectDialog(QDialog):
         self.layout.addRow("<b>Project Status</b>", self.status_combo)
         
         for field, val in details_dict.items():
-            if "priority" in field.lower():
+            if field == "_quick_links": continue
+            if "priority" in field.lower() or "complexity" in field.lower():
                 inp = QComboBox()
                 inp.addItems(["High", "Medium", "Low"])
                 inp.setCurrentText(str(val))
@@ -311,6 +419,9 @@ class EngineeringWorkspace(QMainWindow):
         self.current_loaded_project = None
         self.highlighted_dates = []
         database.init_db()
+        
+        self.undo_shortcut = QShortcut(QKeySequence.StandardKey.Undo, self)
+        self.undo_shortcut.activated.connect(self.handle_undo)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -329,9 +440,9 @@ class EngineeringWorkspace(QMainWindow):
         sidebar_layout.addWidget(app_title)
         sidebar_layout.addSpacing(20)
         
-        self.btn_dashboard = QPushButton("Dashboard")
-        self.btn_projects = QPushButton("Projects")
-        self.btn_tasks = QPushButton("Tasks")
+        self.btn_dashboard = QPushButton("📊 Dashboard")
+        self.btn_projects = QPushButton("📁 Projects")
+        self.btn_tasks = QPushButton("✅ Tasks")
         
         for btn in [self.btn_dashboard, self.btn_projects, self.btn_tasks]:
             btn.setMinimumHeight(45)
@@ -340,7 +451,7 @@ class EngineeringWorkspace(QMainWindow):
             
         sidebar_layout.addStretch() 
         
-        self.btn_settings = QPushButton("Settings")
+        self.btn_settings = QPushButton("⚙️ Settings")
         self.btn_settings.setMinimumHeight(45)
         self.btn_settings.setStyleSheet("text-align: left; padding-left: 15px; font-size: 14px; font-weight: bold;")
         sidebar_layout.addWidget(self.btn_settings)
@@ -350,11 +461,6 @@ class EngineeringWorkspace(QMainWindow):
         self.stacked_widget = QStackedWidget()
         main_layout.addWidget(self.stacked_widget)
 
-        self.btn_dashboard.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(0))
-        self.btn_projects.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(1))
-        self.btn_tasks.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(2))
-        self.btn_settings.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(3))
-
         self.build_dashboard_page()
         self.build_projects_page()
         self.build_tasks_page()
@@ -362,6 +468,31 @@ class EngineeringWorkspace(QMainWindow):
         self.refresh_dashboard()
         self.update_calendar_colors()
         self.update_task_counts()
+
+        self.btn_dashboard.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(0))
+        self.btn_projects.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(1))
+        self.btn_tasks.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(2))
+        self.btn_settings.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(3))
+
+    # --- ACTIVITY LOGGING ---
+    def log_activity(self, action, details):
+        main_path = database.get_setting('main_path')
+        if main_path and os.path.isdir(main_path):
+            log_file = os.path.join(main_path, "activity_log.txt")
+        else:
+            log_file = "activity_log.txt" 
+            
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{timestamp}] {action} | {details}\n")
+        except Exception:
+            pass
+
+    def handle_undo(self):
+        fw = QApplication.focusWidget()
+        if hasattr(fw, 'undo'):
+            fw.undo()
 
     def build_dashboard_page(self):
         page = QWidget()
@@ -412,7 +543,7 @@ class EngineeringWorkspace(QMainWindow):
         """)
         cal_container.addWidget(self.calendar)
         
-        btn_today = QPushButton("Today")
+        btn_today = QPushButton("📅 Today")
         btn_today.setStyleSheet("background-color: #333333; font-weight: bold; padding: 5px; border-radius: 4px;")
         btn_today.clicked.connect(lambda: self.calendar.setSelectedDate(QDate.currentDate()))
         cal_container.addWidget(btn_today)
@@ -426,7 +557,7 @@ class EngineeringWorkspace(QMainWindow):
         proj_container = QWidget()
         proj_layout = QVBoxLayout(proj_container)
         proj_layout.setContentsMargins(0,0,0,0)
-        header_lbl = QLabel("Active Projects")
+        header_lbl = QLabel("🚀 Active Projects")
         header_lbl.setStyleSheet("font-size: 20px; font-weight: bold; margin-bottom: 5px;")
         proj_layout.addWidget(header_lbl)
         
@@ -439,7 +570,41 @@ class EngineeringWorkspace(QMainWindow):
         self.dash_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.dash_layout.setSpacing(15)
         self.dash_proj_scroll.setWidget(self.dash_proj_inner)
-        proj_layout.addWidget(self.dash_proj_scroll)
+        proj_layout.addWidget(self.dash_proj_scroll, stretch=3)
+        
+        # --- Dashboard Quick Links Header ---
+        ql_header_layout = QHBoxLayout()
+        ql_header_layout.setContentsMargins(0, 10, 0, 5)
+        ql_label = QLabel("🔗 Quick Links")
+        ql_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+        
+        btn_dash_ql_add = QPushButton("+")
+        btn_dash_ql_add.setFixedSize(25, 25)
+        btn_dash_ql_add.clicked.connect(self.add_dash_quick_link)
+        
+        btn_dash_ql_del = QPushButton("-")
+        btn_dash_ql_del.setFixedSize(25, 25)
+        btn_dash_ql_del.clicked.connect(self.del_dash_quick_link)
+        
+        ql_header_layout.addWidget(ql_label)
+        ql_header_layout.addWidget(btn_dash_ql_add)
+        ql_header_layout.addWidget(btn_dash_ql_del)
+        ql_header_layout.addStretch()  # Moved stretch to the end to pin buttons left
+        proj_layout.addLayout(ql_header_layout)
+        
+        self.dash_ql_scroll = QScrollArea()
+        self.dash_ql_scroll.setMaximumHeight(80)
+        self.dash_ql_scroll.setWidgetResizable(True)
+        self.dash_ql_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        
+        self.dash_ql_inner = QWidget()
+        self.dash_ql_inner.setStyleSheet("background: transparent;")
+        self.dash_ql_layout = QHBoxLayout(self.dash_ql_inner)
+        self.dash_ql_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.dash_ql_layout.setContentsMargins(0,0,0,0)
+        self.dash_ql_scroll.setWidget(self.dash_ql_inner)
+        proj_layout.addWidget(self.dash_ql_scroll, stretch=1)
+        
         bottom_layout.addWidget(proj_container, stretch=2)
 
         task_container = QFrame()
@@ -447,7 +612,7 @@ class EngineeringWorkspace(QMainWindow):
         task_layout = QVBoxLayout(task_container)
         task_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         
-        task_header = QLabel("Today's Tasks")
+        task_header = QLabel("📝 Today's Tasks")
         task_header.setStyleSheet("font-size: 18px; font-weight: bold; border: none; margin-bottom: 10px;")
         task_layout.addWidget(task_header)
         
@@ -494,8 +659,8 @@ class EngineeringWorkspace(QMainWindow):
         tasks = database.get_all_tasks()
         pending = sum(1 for t in tasks if t[2] == 'pending')
         completed = sum(1 for t in tasks if t[2] == 'completed')
-        self.btn_pending_card.setText(f"Pending Tasks\n{pending}")
-        self.btn_completed_card.setText(f"Completed Tasks\n{completed}")
+        self.btn_pending_card.setText(f"⏳ Pending Tasks\n{pending}")
+        self.btn_completed_card.setText(f"🏆 Completed Tasks\n{completed}")
 
     def show_tasks_table(self, status):
         all_tasks = database.get_all_tasks()
@@ -517,7 +682,7 @@ class EngineeringWorkspace(QMainWindow):
         layout = QVBoxLayout(page)
         
         top_bar = QHBoxLayout()
-        btn_new_project = QPushButton("Create New Project")
+        btn_new_project = QPushButton("➕ Create New Project")
         btn_new_project.clicked.connect(self.create_new_project)
         top_bar.addWidget(btn_new_project)
         top_bar.addStretch()
@@ -527,7 +692,7 @@ class EngineeringWorkspace(QMainWindow):
         
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
-        left_layout.addWidget(QLabel("<b>Project List</b>"))
+        left_layout.addWidget(QLabel("<b>📂 Project List</b>"))
         self.project_list = QListWidget()
         self.project_list.itemClicked.connect(self.load_project_files)
         left_layout.addWidget(self.project_list)
@@ -537,7 +702,7 @@ class EngineeringWorkspace(QMainWindow):
         right_layout = QVBoxLayout(right_panel)
         
         details_header_layout = QHBoxLayout()
-        details_header_layout.addWidget(QLabel("<b>Project Details</b>"))
+        details_header_layout.addWidget(QLabel("<b>📋 Project Details</b>"))
         
         self.btn_top_edit = QPushButton("✏️")
         self.btn_top_edit.setFixedSize(30, 30)
@@ -571,10 +736,48 @@ class EngineeringWorkspace(QMainWindow):
         self.details_layout.addRow(QLabel("<i>Select a project to view details...</i>"))
         right_layout.addWidget(self.details_group)
         right_layout.addSpacing(10)
+        
+        # --- Project Quick Links UI ---
+        pql_header_layout = QHBoxLayout()
+        pql_header_layout.addWidget(QLabel("<b>🔗 Project Quick Links</b>"))
+        
+        self.btn_pql_add = QPushButton("+")
+        self.btn_pql_add.setFixedSize(25, 25)
+        self.btn_pql_add.clicked.connect(self.add_proj_quick_link)
+        
+        self.btn_pql_del = QPushButton("-")
+        self.btn_pql_del.setFixedSize(25, 25)
+        self.btn_pql_del.clicked.connect(self.del_proj_quick_link)
+        
+        pql_header_layout.addWidget(self.btn_pql_add)
+        pql_header_layout.addWidget(self.btn_pql_del)
+        pql_header_layout.addStretch() # Moved stretch to the end to pin buttons left
+        right_layout.addLayout(pql_header_layout)
 
-        right_layout.addWidget(QLabel("<b>Project Files</b>"))
+        self.pql_scroll = QScrollArea()
+        self.pql_scroll.setMaximumHeight(65)
+        self.pql_scroll.setWidgetResizable(True)
+        self.pql_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        
+        self.pql_inner = QWidget()
+        self.pql_inner.setStyleSheet("background: transparent;")
+        self.pql_layout = QHBoxLayout(self.pql_inner)
+        self.pql_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.pql_layout.setContentsMargins(0, 0, 0, 0)
+        self.pql_scroll.setWidget(self.pql_inner)
+        
+        right_layout.addWidget(self.pql_scroll)
+        right_layout.addSpacing(10)
+        # ------------------------------
+
+        right_layout.addWidget(QLabel("<b>🗄️ Project Files</b>"))
+        
         self.file_model = QFileSystemModel()
+        self.file_model.setReadOnly(False) 
         self.file_model.setRootPath("")
+        
+        self.file_model.fileRenamed.connect(lambda path, old_name, new_name: self.log_activity("RENAMED", f"'{old_name}' to '{new_name}' in {path}"))
+        
         self.tree_view = QTreeView()
         self.tree_view.setModel(self.file_model)
         self.tree_view.setColumnWidth(0, 250)
@@ -596,7 +799,7 @@ class EngineeringWorkspace(QMainWindow):
         
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
-        left_layout.addWidget(QLabel("<b>Select Date</b>"))
+        left_layout.addWidget(QLabel("<b>📅 Select Date</b>"))
         
         self.task_calendar = QCalendarWidget()
         self.task_calendar.setFixedSize(300, 180)
@@ -614,19 +817,19 @@ class EngineeringWorkspace(QMainWindow):
         self.task_calendar.clicked.connect(self.load_tasks_for_date)
         left_layout.addWidget(self.task_calendar)
         
-        btn_today_task = QPushButton("Today")
+        btn_today_task = QPushButton("📅 Today")
         btn_today_task.setStyleSheet("background-color: #333333; font-weight: bold; padding: 5px; border-radius: 4px;")
         btn_today_task.clicked.connect(lambda: self.task_calendar.setSelectedDate(QDate.currentDate()))
         left_layout.addWidget(btn_today_task)
         
         left_layout.addSpacing(20)
         
-        self.btn_pending_card = QPushButton("Pending Tasks\n0")
+        self.btn_pending_card = QPushButton("⏳ Pending Tasks\n0")
         self.btn_pending_card.setStyleSheet("QPushButton { background-color: #e3a83b; color: black; font-weight: bold; border-radius: 8px; padding: 15px; font-size: 14px; text-align: left; } QPushButton:hover { background-color: #c79230; }")
         self.btn_pending_card.clicked.connect(lambda: self.show_tasks_table('pending'))
         left_layout.addWidget(self.btn_pending_card)
 
-        self.btn_completed_card = QPushButton("Completed Tasks\n0")
+        self.btn_completed_card = QPushButton("🏆 Completed Tasks\n0")
         self.btn_completed_card.setStyleSheet("QPushButton { background-color: #28a745; color: white; font-weight: bold; border-radius: 8px; padding: 15px; font-size: 14px; text-align: left; } QPushButton:hover { background-color: #218838; }")
         self.btn_completed_card.clicked.connect(lambda: self.show_tasks_table('completed'))
         left_layout.addWidget(self.btn_completed_card)
@@ -636,20 +839,20 @@ class EngineeringWorkspace(QMainWindow):
         
         mid_panel = QWidget()
         mid_layout = QVBoxLayout(mid_panel)
-        mid_layout.addWidget(QLabel("<b>Tasks for Selected Date</b>"))
+        mid_layout.addWidget(QLabel("<b>🎯 Tasks for Selected Date</b>"))
         
         self.task_list_widget = QListWidget()
         self.task_list_widget.itemClicked.connect(self.display_task_details)
         mid_layout.addWidget(self.task_list_widget)
         
-        btn_add_task = QPushButton("+ Add New Task")
+        btn_add_task = QPushButton("➕ Add New Task")
         btn_add_task.clicked.connect(self.create_new_task)
         mid_layout.addWidget(btn_add_task)
         splitter.addWidget(mid_panel)
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        right_layout.addWidget(QLabel("<b>Task Details</b>"))
+        right_layout.addWidget(QLabel("<b>🔍 Task Details</b>"))
         
         self.task_details_group = QFrame()
         self.task_details_group.setStyleSheet("QFrame { background-color: palette(alternate-base); border-radius: 5px; }")
@@ -671,9 +874,9 @@ class EngineeringWorkspace(QMainWindow):
         layout.setContentsMargins(20, 20, 20, 20)
         
         header_layout = QHBoxLayout()
-        header_layout.addWidget(QLabel("<h2>Settings</h2>"))
+        header_layout.addWidget(QLabel("<h2>⚙️ Settings</h2>"))
         header_layout.addStretch()
-        theme_btn = QPushButton("Toggle Dark/Light Mode")
+        theme_btn = QPushButton("🌓 Toggle Dark/Light Mode")
         theme_btn.clicked.connect(self.toggle_theme)
         header_layout.addWidget(theme_btn)
         layout.addLayout(header_layout)
@@ -688,7 +891,7 @@ class EngineeringWorkspace(QMainWindow):
         path_layout = QHBoxLayout()
         self.path_input = QLineEdit(database.get_setting('main_path'))
         self.path_input.setReadOnly(True)
-        btn_browse = QPushButton("Browse...")
+        btn_browse = QPushButton("📂 Browse...")
         btn_browse.clicked.connect(self.browse_main_path)
         path_layout.addWidget(self.path_input)
         path_layout.addWidget(btn_browse)
@@ -699,59 +902,130 @@ class EngineeringWorkspace(QMainWindow):
         settings_scroll.setWidgetResizable(True)
         settings_scroll.setStyleSheet("QScrollArea { border: none; }")
         settings_container = QWidget()
-        lists_layout = QHBoxLayout(settings_container)
+        lists_layout = QGridLayout(settings_container)
         
-        folder_layout = QVBoxLayout()
-        folder_layout.addWidget(QLabel("<b>Standard Subfolders</b>"))
+        def create_list_panel(title, db_key, list_widget, row, col):
+            panel = QVBoxLayout()
+            panel.addWidget(QLabel(f"<b>{title}</b>"))
+            list_widget.addItems(database.get_setting(db_key))
+            panel.addWidget(list_widget)
+            
+            btn_box = QHBoxLayout()
+            b_add, b_ren, b_del = QPushButton("+"), QPushButton("✏️"), QPushButton("-")
+            b_up, b_down = QPushButton("⬆️"), QPushButton("⬇️")
+            
+            b_add.clicked.connect(lambda: self.add_to_list(list_widget, title))
+            b_ren.clicked.connect(lambda: self.rename_in_list(list_widget, title))
+            b_del.clicked.connect(lambda: self.del_from_list(list_widget))
+            b_up.clicked.connect(lambda: self.move_list_item(list_widget, -1))
+            b_down.clicked.connect(lambda: self.move_list_item(list_widget, 1))
+            
+            for b in [b_add, b_ren, b_del, b_up, b_down]: btn_box.addWidget(b)
+            panel.addLayout(btn_box)
+            lists_layout.addLayout(panel, row, col)
+
         self.folder_list = QListWidget()
-        self.folder_list.addItems(database.get_setting('subfolders'))
-        folder_layout.addWidget(self.folder_list)
-        btn_f_layout = QHBoxLayout()
-        btn_f_add, btn_f_ren, btn_f_del = QPushButton("+"), QPushButton("✏️"), QPushButton("-")
-        btn_f_add.clicked.connect(lambda: self.add_to_list(self.folder_list, "Add Folder"))
-        btn_f_ren.clicked.connect(lambda: self.rename_in_list(self.folder_list, "Rename Folder"))
-        btn_f_del.clicked.connect(lambda: self.del_from_list(self.folder_list))
-        for b in [btn_f_add, btn_f_ren, btn_f_del]: btn_f_layout.addWidget(b)
-        folder_layout.addLayout(btn_f_layout)
-        lists_layout.addLayout(folder_layout)
-
-        field_layout = QVBoxLayout()
-        field_layout.addWidget(QLabel("<b>Project Form Fields</b>"))
         self.field_list = QListWidget()
-        self.field_list.addItems(database.get_setting('project_fields'))
-        field_layout.addWidget(self.field_list)
-        btn_p_layout = QHBoxLayout()
-        btn_p_add, btn_p_ren, btn_p_del = QPushButton("+"), QPushButton("✏️"), QPushButton("-")
-        btn_p_add.clicked.connect(lambda: self.add_to_list(self.field_list, "Add Field"))
-        btn_p_ren.clicked.connect(lambda: self.rename_in_list(self.field_list, "Rename Field"))
-        btn_p_del.clicked.connect(lambda: self.del_from_list(self.field_list))
-        for b in [btn_p_add, btn_p_ren, btn_p_del]: btn_p_layout.addWidget(b)
-        field_layout.addLayout(btn_p_layout)
-        lists_layout.addLayout(field_layout)
-
-        dash_field_layout = QVBoxLayout()
-        dash_field_layout.addWidget(QLabel("<b>Dashboard Card Fields</b>"))
         self.dash_field_list = QListWidget()
-        self.dash_field_list.addItems(database.get_setting('dashboard_fields'))
-        dash_field_layout.addWidget(self.dash_field_list)
-        btn_d_layout = QHBoxLayout()
-        btn_d_add, btn_d_ren, btn_d_del = QPushButton("+"), QPushButton("✏️"), QPushButton("-")
-        btn_d_add.clicked.connect(lambda: self.add_to_list(self.dash_field_list, "Add Dashboard Field"))
-        btn_d_ren.clicked.connect(lambda: self.rename_in_list(self.dash_field_list, "Rename Field"))
-        btn_d_del.clicked.connect(lambda: self.del_from_list(self.dash_field_list))
-        for b in [btn_d_add, btn_d_ren, btn_d_del]: btn_d_layout.addWidget(b)
-        dash_field_layout.addLayout(btn_d_layout)
-        lists_layout.addLayout(dash_field_layout)
+        self.task_field_list = QListWidget()
+        
+        create_list_panel("Standard Subfolders", "subfolders", self.folder_list, 0, 0)
+        create_list_panel("Project Form Fields", "project_fields", self.field_list, 0, 1)
+        create_list_panel("Dashboard Card Fields", "dashboard_fields", self.dash_field_list, 1, 0)
+        create_list_panel("Task Form Fields", "task_fields", self.task_field_list, 1, 1)
 
         settings_scroll.setWidget(settings_container)
         layout.addWidget(settings_scroll)
+        
+        self.cb_apply_existing = QCheckBox("Apply structural changes to existing projects (will overwrite/create files)")
+        self.cb_apply_existing.setStyleSheet("color: #e3a83b; font-weight: bold; margin-bottom: 5px;")
+        layout.addWidget(self.cb_apply_existing)
 
-        btn_save = QPushButton("Save Settings & Sync All Projects")
+        btn_save = QPushButton("💾 Save Settings")
         btn_save.setMinimumHeight(40)
         btn_save.setStyleSheet("background-color: #2b5c8f; color: white; font-weight: bold;")
         btn_save.clicked.connect(self.save_settings)
         layout.addWidget(btn_save)
         self.stacked_widget.addWidget(page)
+
+    def move_list_item(self, list_widget, direction):
+        row = list_widget.currentRow()
+        if row < 0: return
+        new_row = row + direction
+        if new_row < 0 or new_row >= list_widget.count(): return
+        item = list_widget.takeItem(row)
+        list_widget.insertItem(new_row, item)
+        list_widget.setCurrentRow(new_row)
+
+    # --- Quick Links (Dashboard & Projects) ---
+    def add_dash_quick_link(self):
+        dialog = QuickLinkDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            name, url = dialog.get_data()
+            if name and url:
+                qls = database.get_setting('quick_links')
+                qls.append(f"{name} | {url}")
+                database.update_setting('quick_links', qls)
+                self.refresh_dashboard()
+
+    def del_dash_quick_link(self):
+        qls = database.get_setting('quick_links')
+        if not qls: return
+        item, ok = QInputDialog.getItem(self, "❌ Delete Quick Link", "Select link to remove:", qls, 0, False)
+        if ok and item:
+            qls.remove(item)
+            database.update_setting('quick_links', qls)
+            self.refresh_dashboard()
+
+    def add_proj_quick_link(self):
+        if not self.current_loaded_project: return
+        dialog = QuickLinkDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            name, url = dialog.get_data()
+            if name and url:
+                proj_name, path, status, details = self.current_loaded_project
+                pqls = details.get("_quick_links", [])
+                pqls.append(f"{name} | {url}")
+                details["_quick_links"] = pqls
+                database.update_project_details(proj_name, status, details)
+                self.current_loaded_project = (proj_name, path, status, details)
+                self.refresh_proj_quick_links(proj_name, details)
+
+    def del_proj_quick_link(self):
+        if not self.current_loaded_project: return
+        proj_name, path, status, details = self.current_loaded_project
+        pqls = details.get("_quick_links", [])
+        if not pqls: return
+        
+        item, ok = QInputDialog.getItem(self, "❌ Delete Quick Link", "Select link to remove:", pqls, 0, False)
+        if ok and item:
+            pqls.remove(item)
+            details["_quick_links"] = pqls
+            database.update_project_details(proj_name, status, details)
+            self.current_loaded_project = (proj_name, path, status, details)
+            self.refresh_proj_quick_links(proj_name, details)
+
+    def refresh_proj_quick_links(self, proj_name, details):
+        while self.pql_layout.count():
+            item = self.pql_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+
+        pqls = details.get("_quick_links", [])
+        if not pqls:
+            lbl = QLabel("<i>No quick links added.</i>")
+            lbl.setStyleSheet("color: #858796;")
+            self.pql_layout.addWidget(lbl)
+        else:
+            for item in pqls:
+                parts = item.split("|", 1)
+                n = parts[0].strip()
+                u = parts[1].strip() if len(parts)>1 else ""
+                btn = QPushButton(n)
+                btn.setStyleSheet("background-color: #333333; padding: 5px 15px; border-radius: 4px;")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.clicked.connect(lambda _, url=u: QDesktopServices.openUrl(QUrl(url) if url.startswith('http') else QUrl.fromLocalFile(url)))
+                self.pql_layout.addWidget(btn)
+        self.pql_layout.addStretch()
 
     # --- Actions & Logic ---
     def toggle_theme(self):
@@ -765,25 +1039,30 @@ class EngineeringWorkspace(QMainWindow):
                 f.write(f"PROJECT DETAILS: {name}\n")
                 f.write("="*40 + "\n\n")
                 for k, v in details.items():
-                    f.write(f"{k.upper()}:\n{v}\n\n")
+                    if k != "_quick_links":
+                        f.write(f"{k.upper()}:\n{v}\n\n")
         except Exception as e: pass
 
     def open_notepad_file(self, name, path, file_type):
         file_path = os.path.join(path, f"{name}_{file_type.capitalize()}.txt")
         if os.path.exists(file_path):
+            self.log_activity("OPENED FILE", file_path)
             QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
         else:
             if file_type == "notes":
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(f"PROJECT NOTES: {name}\n")
                     f.write("="*40 + "\n\n")
+                self.log_activity("CREATED FILE", file_path)
                 QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
             else:
                 QMessageBox.warning(self, "Not Found", f"{file_type.title()} file not found.")
 
     def open_file_on_double_click(self, index):
         if not self.file_model.isDir(index):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(self.file_model.filePath(index)))
+            file_path = self.file_model.filePath(index)
+            self.log_activity("OPENED FILE", file_path)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
 
     def refresh_dashboard(self):
         for i in reversed(range(self.dash_layout.count())): 
@@ -840,10 +1119,9 @@ class EngineeringWorkspace(QMainWindow):
             if details_str:
                 details = json.loads(details_str)
                 for df in dash_fields:
-                    if df in details and details[df]:
-                        lbl = QLabel(f"<b style='color: #858796;'>{df}:</b> {details[df]}")
+                    if df in details and details[df] and df != "_quick_links":
+                        lbl = SelectableLabel(f"<b style='color: #858796;'>{df}:</b> {details[df]}")
                         lbl.setStyleSheet("background: transparent; border: none; font-size: 13px;")
-                        lbl.setWordWrap(True)
                         c_layout.addWidget(lbl)
             c_layout.addStretch()
             self.dash_layout.addWidget(card, row, col)
@@ -851,6 +1129,27 @@ class EngineeringWorkspace(QMainWindow):
             if col >= 3:
                 col = 0
                 row += 1
+
+        while self.dash_ql_layout.count():
+            item = self.dash_ql_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+
+        qls = database.get_setting('quick_links')
+        if not qls:
+            lbl = QLabel("<i>No quick links added.</i>")
+            lbl.setStyleSheet("color: #858796;")
+            self.dash_ql_layout.addWidget(lbl)
+        else:
+            for item in qls:
+                parts = item.split("|", 1)
+                n = parts[0].strip()
+                u = parts[1].strip() if len(parts)>1 else ""
+                btn = QPushButton(n)
+                btn.setStyleSheet("background-color: #333333; padding: 5px 15px; border-radius: 4px;")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.clicked.connect(lambda _, url=u: QDesktopServices.openUrl(QUrl(url) if url.startswith('http') else QUrl.fromLocalFile(url)))
+                self.dash_ql_layout.addWidget(btn)
+        self.dash_ql_layout.addStretch()
 
         for i in reversed(range(self.dash_tasks_layout.count())):
             layout_item = self.dash_tasks_layout.itemAt(i)
@@ -892,7 +1191,6 @@ class EngineeringWorkspace(QMainWindow):
                 row_layout.addStretch()
                 self.dash_tasks_layout.addWidget(row_widget)
 
-    # --- Project Logic ---
     def create_new_project(self):
         main_path = database.get_setting('main_path')
         if not main_path or not os.path.isdir(main_path):
@@ -916,6 +1214,7 @@ class EngineeringWorkspace(QMainWindow):
 
                 database.add_project(project_name, main_path, data)
                 self.write_notepad_files(project_name, project_full_path, data)
+                self.log_activity("CREATED PROJECT", project_full_path)
                 self.refresh_dashboard()
                 QMessageBox.information(self, "Success", f"Project '{project_name}' created!")
             except Exception as e:
@@ -956,13 +1255,15 @@ class EngineeringWorkspace(QMainWindow):
                 self.btn_top_timeline.show()
                 
                 status_color = "green" if status == 'active' else "red" if status == 'closed' else "#FFC107"
-                self.details_layout.addRow("<b>Status:</b>", QLabel(f"<span style='color:{status_color}'>{status.upper()}</span>"))
+                
+                self.details_layout.addRow("<b>Project Name:</b>", SelectableLabel(name))
+                self.details_layout.addRow("<b>Status:</b>", SelectableLabel(f"<span style='color:{status_color}'>{status.upper()}</span>"))
                 
                 for key, val in details.items():
-                    lbl_val = QLabel(str(val))
-                    lbl_val.setWordWrap(True)
-                    self.details_layout.addRow(f"<b>{key}:</b>", lbl_val)
+                    if key == "_quick_links": continue
+                    self.details_layout.addRow(f"<b>{key}:</b>", SelectableLabel(str(val)))
 
+                self.refresh_proj_quick_links(name, details)
                 self.tree_view.setRootIndex(self.file_model.setRootPath(path))
                 break
 
@@ -970,6 +1271,10 @@ class EngineeringWorkspace(QMainWindow):
         dialog = EditProjectDialog(name, current_status, details, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_status, new_data = dialog.get_data()
+            
+            if "_quick_links" in details:
+                new_data["_quick_links"] = details["_quick_links"]
+                
             database.update_project_details(name, new_status, new_data)
             self.write_notepad_files(name, path, new_data)
             self.refresh_dashboard()
@@ -984,41 +1289,94 @@ class EngineeringWorkspace(QMainWindow):
     def open_context_menu(self, position):
         index = self.tree_view.indexAt(position)
         if not index.isValid(): return
-        file_path, is_dir = self.file_model.filePath(index), self.file_model.isDir(index)
         
+        raw_path = self.file_model.filePath(index)
+        file_path = os.path.normpath(raw_path)
+        is_dir = self.file_model.isDir(index)
+        
+        current_info = database.get_folder_info(file_path)
+        if not current_info:
+            current_info = database.get_folder_info(raw_path)
+            
+        is_iteration = False
+        iter_data = {}
+        try:
+            if current_info:
+                data = json.loads(current_info)
+                if isinstance(data, dict) and "Iteration count" in data:
+                    is_iteration = True
+                    iter_data = data
+        except:
+            pass
+
         menu = QMenu()
-        actions = {
-            "ℹ️ Folder/File Info": lambda: self.edit_folder_info(file_path),
-            "📁 Open in File Explorer": lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(file_path)),
-            "✏️ Rename": lambda: self.tree_view.edit(index),
-            "📋 Copy": lambda: self.copy_file_dir(file_path, is_dir),
-            "✂️ Move": lambda: self.move_file_dir(file_path),
-            "🗑️ Delete": lambda: self.delete_file_dir(file_path, index)
-        }
+        actions = {}
+        
+        actions["🔄 Create Iteration"] = lambda: self.create_iteration(file_path, is_dir)
+        if is_iteration:
+            actions["⚙️ Edit Iteration Details"] = lambda: self.edit_iteration_details(file_path, iter_data)
+            
+        actions["ℹ️ Folder/File Info"] = lambda: self.edit_folder_info(file_path, current_info)
+        actions["📁 Open in File Explorer"] = lambda: (self.log_activity("OPENED DIRECTORY", raw_path), QDesktopServices.openUrl(QUrl.fromLocalFile(raw_path)))
+        actions["✏️ Rename"] = lambda: self.tree_view.edit(index)
+        actions["📋 Copy"] = lambda: self.copy_file_dir(file_path, is_dir)
+        actions["✂️ Move"] = lambda: self.move_file_dir(file_path)
+        actions["🗑️ Delete"] = lambda: self.delete_file_dir(file_path, index)
+        
         for text in actions.keys(): menu.addAction(QAction(text, self))
         action = menu.exec(self.tree_view.viewport().mapToGlobal(position))
         if action and action.text() in actions: actions[action.text()]()
 
-    def edit_folder_info(self, file_path):
-        current_info = database.get_folder_info(file_path)
+    def create_iteration(self, file_path, is_dir):
+        base_dir = file_path if is_dir else os.path.dirname(file_path)
+        dialog = IterationDialog(parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            data = dialog.get_data()
+            folder_name = f"{data['Iteration count']}_{data['Category']}"
+            new_folder_path = os.path.normpath(os.path.join(base_dir, folder_name))
+            
+            try:
+                os.makedirs(new_folder_path, exist_ok=True)
+                database.set_folder_info(new_folder_path, json.dumps(data))
+                self.log_activity("CREATED ITERATION", new_folder_path)
+                QMessageBox.information(self, "Success", f"Iteration folder '{folder_name}' created.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to create folder: {str(e)}")
+
+    def edit_iteration_details(self, file_path, existing_data):
+        dialog = IterationDialog(existing_data=existing_data, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_data = dialog.get_data()
+            database.set_folder_info(file_path, json.dumps(new_data))
+            QMessageBox.information(self, "Updated", "Iteration details updated successfully.")
+
+    def edit_folder_info(self, file_path, current_info):
         new_info, ok = QInputDialog.getMultiLineText(self, "Information", f"Details for:\n{os.path.basename(file_path)}", current_info)
         if ok: database.set_folder_info(file_path, new_info.strip())
 
     def copy_file_dir(self, file_path, is_dir):
         dest = QFileDialog.getExistingDirectory(self, "Select Destination")
         if dest:
-            try: shutil.copytree(file_path, os.path.join(dest, os.path.basename(file_path))) if is_dir else shutil.copy2(file_path, dest)
+            try: 
+                if is_dir:
+                    shutil.copytree(file_path, os.path.join(dest, os.path.basename(file_path)))
+                else:
+                    shutil.copy2(file_path, dest)
+                self.log_activity("COPIED", f"{file_path} -> {dest}")
             except Exception as e: QMessageBox.critical(self, "Error", str(e))
 
     def move_file_dir(self, file_path):
         dest = QFileDialog.getExistingDirectory(self, "Select Destination")
         if dest:
-            try: shutil.move(file_path, dest)
+            try: 
+                shutil.move(file_path, dest)
+                self.log_activity("MOVED", f"{file_path} -> {dest}")
             except Exception as e: QMessageBox.critical(self, "Error", str(e))
 
     def delete_file_dir(self, file_path, index):
-        if QMessageBox.question(self, "Delete", f"Permanently delete {os.path.basename(file_path)}?") == QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(self, "🗑️ Delete", f"Permanently delete {os.path.basename(file_path)}?") == QMessageBox.StandardButton.Yes:
             self.file_model.remove(index)
+            self.log_activity("DELETED", file_path)
 
     # --- Tasks Logic ---
     def create_new_task(self):
@@ -1065,14 +1423,13 @@ class EngineeringWorkspace(QMainWindow):
             if child.widget(): child.widget().deleteLater()
             
         status_color = "green" if status == 'completed' else "#e3a83b"
-        self.task_details_layout.addRow("<b>Status:</b>", QLabel(f"<span style='color:{status_color}'>{status.upper()}</span>"))
+        self.task_details_layout.addRow("<b>Status:</b>", SelectableLabel(f"<span style='color:{status_color}'>{status.upper()}</span>"))
         
         for k, v in details.items():
-            lbl = QLabel(str(v))
-            lbl.setWordWrap(True)
+            lbl = SelectableLabel(str(v))
             self.task_details_layout.addRow(f"<b>{k}:</b>", lbl)
             
-        btn_toggle = QPushButton("Mark as Completed" if status == 'pending' else "Mark as Pending")
+        btn_toggle = QPushButton("✔️ Mark as Completed" if status == 'pending' else "⏳ Mark as Pending")
         btn_toggle.clicked.connect(lambda: self.toggle_task_status_from_details(t_id, 'completed' if status == 'pending' else 'pending'))
         self.task_details_layout.addRow(btn_toggle)
 
@@ -1128,17 +1485,27 @@ class EngineeringWorkspace(QMainWindow):
         database.update_setting('main_path', self.path_input.text())
         
         fields = [self.field_list.item(i).text() for i in range(self.field_list.count())]
-        database.update_setting('subfolders', [self.folder_list.item(i).text() for i in range(self.folder_list.count())])
+        folders = [self.folder_list.item(i).text() for i in range(self.folder_list.count())]
+        
+        database.update_setting('subfolders', folders)
         database.update_setting('project_fields', fields)
         database.update_setting('dashboard_fields', [self.dash_field_list.item(i).text() for i in range(self.dash_field_list.count())])
+        database.update_setting('task_fields', [self.task_field_list.item(i).text() for i in range(self.task_field_list.count())])
         
-        for name, path, details_json, status in database.get_all_projects():
-            old_details = json.loads(details_json) if details_json else {}
-            new_details = {f: old_details.get(f, "") for f in fields}
-            for k, v in old_details.items():
-                if k not in new_details: new_details[k] = v
-            database.update_project_details(name, status, new_details)
-            self.write_notepad_files(name, path, new_details)
+        if self.cb_apply_existing.isChecked():
+            for name, path, details_json, status in database.get_all_projects():
+                old_details = json.loads(details_json) if details_json else {}
+                new_details = {f: old_details.get(f, "") for f in fields}
+                for k, v in old_details.items():
+                    if k not in new_details: new_details[k] = v
+                database.update_project_details(name, status, new_details)
+                self.write_notepad_files(name, path, new_details)
+                
+                try:
+                    for f in folders:
+                        os.makedirs(os.path.join(path, f), exist_ok=True)
+                except Exception:
+                    pass
             
         self.refresh_dashboard()
         if self.current_loaded_project:
@@ -1149,7 +1516,7 @@ class EngineeringWorkspace(QMainWindow):
                     self.load_project_files(item)
                     break
             
-        QMessageBox.information(self, "Saved", "Setting updated successfully.")
+        QMessageBox.information(self, "Saved", "Settings updated successfully.")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
