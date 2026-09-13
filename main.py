@@ -37,6 +37,28 @@ class SelectableLabel(QLabel):
         menu.addAction(copy_action)
         menu.exec(self.mapToGlobal(pos))
 
+class QuickLinkButton(QPushButton):
+    edit_requested = pyqtSignal(str, str)
+    def __init__(self, name, url, parent=None):
+        super().__init__(name, parent)
+        self.url = url
+        self.name_val = name
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("background-color: #333333; padding: 5px 15px; border-radius: 4px;")
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.show_context_menu)
+        self.clicked.connect(self.open_link)
+
+    def open_link(self):
+        QDesktopServices.openUrl(QUrl(self.url) if self.url.startswith('http') else QUrl.fromLocalFile(self.url))
+
+    def show_context_menu(self, pos):
+        menu = QMenu(self)
+        edit_action = QAction("✏️ Edit Link", self)
+        edit_action.triggered.connect(lambda: self.edit_requested.emit(self.name_val, self.url))
+        menu.addAction(edit_action)
+        menu.exec(self.mapToGlobal(pos))
+
 class ClickableFrame(QFrame):
     clicked = pyqtSignal(str)
     def __init__(self, project_name, parent=None):
@@ -104,6 +126,99 @@ class QuickLinkDialog(QDialog):
 
     def get_data(self):
         return self.name_input.text().strip(), self.path_input.text().strip()
+
+class ProjectQuickLinksDialog(QDialog):
+    def __init__(self, project_name, pqls, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"🔗 Quick Links: {project_name}")
+        self.setMinimumSize(450, 350)
+        self.pqls = pqls.copy()
+        
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("<i>Double-click a link to open it. Right-click to edit.</i>"))
+        
+        self.list_widget = QListWidget()
+        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self.show_context_menu)
+        self.list_widget.itemDoubleClicked.connect(self.open_link)
+        layout.addWidget(self.list_widget)
+        
+        self.populate_list(self.pqls)
+        
+        btn_layout = QHBoxLayout()
+        btn_add = QPushButton("➕ Add Link")
+        btn_del = QPushButton("❌ Remove Link")
+        btn_add.clicked.connect(self.add_link)
+        btn_del.clicked.connect(self.remove_link)
+        
+        btn_layout.addWidget(btn_add)
+        btn_layout.addWidget(btn_del)
+        layout.addLayout(btn_layout)
+        
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        layout.addWidget(box)
+
+    def populate_list(self, pqls):
+        self.list_widget.clear()
+        for pql in pqls:
+            parts = pql.split("|", 1)
+            name = parts[0].strip()
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, pql) 
+            self.list_widget.addItem(item)
+            
+    def open_link(self, item):
+        raw = item.data(Qt.ItemDataRole.UserRole)
+        parts = raw.split("|", 1)
+        u = parts[1].strip() if len(parts) > 1 else ""
+        if u:
+            QDesktopServices.openUrl(QUrl(u) if u.startswith('http') else QUrl.fromLocalFile(u))
+
+    def show_context_menu(self, pos):
+        item = self.list_widget.itemAt(pos)
+        if not item: return
+        menu = QMenu(self)
+        edit_action = QAction("✏️ Edit Link", self)
+        edit_action.triggered.connect(lambda: self.edit_link(item))
+        menu.addAction(edit_action)
+        menu.exec(self.list_widget.mapToGlobal(pos))
+        
+    def edit_link(self, item):
+        raw = item.data(Qt.ItemDataRole.UserRole)
+        parts = raw.split("|", 1)
+        old_name = parts[0].strip()
+        old_url = parts[1].strip() if len(parts) > 1 else ""
+        
+        dialog = QuickLinkDialog(self)
+        dialog.setWindowTitle("✏️ Edit Quick Link")
+        dialog.name_input.setText(old_name)
+        dialog.path_input.setText(old_url)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_name, new_url = dialog.get_data()
+            if new_name and new_url:
+                new_raw = f"{new_name} | {new_url}"
+                item.setText(new_name)
+                item.setData(Qt.ItemDataRole.UserRole, new_raw)
+
+    def add_link(self):
+        dialog = QuickLinkDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            name, url = dialog.get_data()
+            if name and url:
+                raw = f"{name} | {url}"
+                item = QListWidgetItem(name)
+                item.setData(Qt.ItemDataRole.UserRole, raw)
+                self.list_widget.addItem(item)
+                
+    def remove_link(self):
+        row = self.list_widget.currentRow()
+        if row >= 0:
+            self.list_widget.takeItem(row)
+            
+    def get_data(self):
+        return [self.list_widget.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list_widget.count())]
 
 class IterationDialog(QDialog):
     def __init__(self, existing_data=None, parent=None):
@@ -193,7 +308,7 @@ class TimelineDialog(QDialog):
 
         btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         btn_box.accepted.connect(self.accept)
-        btn_box.rejected.connect(self.reject)
+        self.btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
 
     def add_row(self, date_str, remarks):
@@ -246,72 +361,297 @@ class TimelineDialog(QDialog):
         return data
 
 class TaskTableDialog(QDialog):
+    jump_requested = pyqtSignal(int, str)
+
     def __init__(self, title, tasks, parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(900, 450)
+        self.resize(1100, 500)
+        self.tasks_data = tasks
         layout = QVBoxLayout(self)
 
-        table = QTableWidget()
-        layout.addWidget(table)
+        self.table = QTableWidget()
+        layout.addWidget(self.table)
         headers = ["Date", "Task Name", "Deadline", "Priority", "Project", "Notes"]
-        table.setColumnCount(len(headers))
-        table.setHorizontalHeaderLabels(headers)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        table.setRowCount(len(tasks))
+        self.table.setColumnCount(len(headers))
+        self.table.setHorizontalHeaderLabels(headers)
+        
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setWordWrap(True)
+        self.table.setRowCount(len(tasks))
 
         for row_idx, (t_id, t_date, t_status, details_json) in enumerate(tasks):
             details = json.loads(details_json)
-            table.setItem(row_idx, 0, QTableWidgetItem(t_date))
-            table.setItem(row_idx, 1, QTableWidgetItem(details.get("Task Name", "")))
-            table.setItem(row_idx, 2, QTableWidgetItem(details.get("Dead line", "")))
-            table.setItem(row_idx, 3, QTableWidgetItem(details.get("Priority", "")))
-            table.setItem(row_idx, 4, QTableWidgetItem(details.get("Project", "")))
-            table.setItem(row_idx, 5, QTableWidgetItem(details.get("Notes", "")))
+            self.table.setItem(row_idx, 0, QTableWidgetItem(t_date))
+            self.table.setItem(row_idx, 1, QTableWidgetItem(details.get("Task Name", "")))
+            self.table.setItem(row_idx, 2, QTableWidgetItem(details.get("Dead line", "")))
+            self.table.setItem(row_idx, 3, QTableWidgetItem(details.get("Priority", "")))
+            self.table.setItem(row_idx, 4, QTableWidgetItem(details.get("Project", "")))
+            self.table.setItem(row_idx, 5, QTableWidgetItem(details.get("Notes", "")))
+
+        self.table.resizeColumnsToContents()
+        for col in range(5):
+            if self.table.columnWidth(col) > 250:
+                self.table.setColumnWidth(col, 250)
+
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.show_context_menu)
 
         btn_close = QPushButton("❌ Close")
         btn_close.clicked.connect(self.accept)
         layout.addWidget(btn_close)
 
+    def show_context_menu(self, pos):
+        item = self.table.itemAt(pos)
+        if not item: return
+        row = item.row()
+        t_id, t_date, _, _ = self.tasks_data[row]
+        
+        menu = QMenu()
+        jump_action = QAction("🧭 Navigate to this task", self)
+        jump_action.triggered.connect(lambda: self.trigger_jump(t_id, t_date))
+        menu.addAction(jump_action)
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+        
+    def trigger_jump(self, t_id, t_date):
+        self.jump_requested.emit(t_id, t_date)
+        self.accept()
+
 class DynamicFormDialog(QDialog):
-    def __init__(self, title, name_field_label, fields, parent=None):
+    def __init__(self, title, fields, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"📝 {title}")
-        self.setMinimumWidth(450)
-        self.layout = QFormLayout(self)
-        self.inputs = {}
+        self.setMinimumWidth(800)
         
+        main_layout = QVBoxLayout(self)
+        
+        self.grid = QGridLayout()
+        self.inputs = {}
+        self.dynamic_base_name = "Detail"
+        
+        # Fixed Fields
         self.name_input = QLineEdit()
-        self.layout.addRow(f"<b>{name_field_label} *</b>", self.name_input)
+        self.grid.addWidget(QLabel("<b>Project Name *</b>"), 0, 0)
+        self.grid.addWidget(self.name_input, 0, 1)
+        
+        self.priority_combo = QComboBox()
+        self.priority_combo.addItems(["High", "Medium", "Low"])
+        self.grid.addWidget(QLabel("<b>Priority *</b>"), 0, 2)
+        self.grid.addWidget(self.priority_combo, 0, 3)
+        
+        self.complexity_combo = QComboBox()
+        self.complexity_combo.addItems(["High", "Medium", "Low"])
+        self.grid.addWidget(QLabel("<b>Complexity *</b>"), 0, 4)
+        self.grid.addWidget(self.complexity_combo, 0, 5)
+        
+        # Standard Fields 
+        row, col = 1, 0
         
         for field in fields:
-            if "priority" in field.lower() or "complexity" in field.lower():
-                inp = QComboBox()
-                inp.addItems(["High", "Medium", "Low"])
-            elif "description" in field.lower() or "notes" in field.lower():
-                inp = QTextEdit()
-                inp.setMaximumHeight(80)
+            if field.lower() in ["priority", "complexity", "project name", "status"]: continue
+            
+            lbl = QLabel(f"<b>{field}</b>")
+            if "item" in field.lower():
+                inp = QLineEdit("0")
+                self.dynamic_base_name = field.replace("Item", "Detail").replace("item", "detail")
+                inp.textChanged.connect(self.update_dynamic_fields)
             else:
                 inp = QLineEdit()
                 
             self.inputs[field] = inp
-            self.layout.addRow(field, inp)
+            self.grid.addWidget(lbl, row, col * 2)
+            self.grid.addWidget(inp, row, col * 2 + 1)
             
+            col += 1
+            if col > 2:
+                col = 0
+                row += 1
+                
+        self.grid.setColumnStretch(1, 1)
+        self.grid.setColumnStretch(3, 1)
+        self.grid.setColumnStretch(5, 1)
+
+        main_layout.addLayout(self.grid)
+        
+        # Lower Section: Dynamic Form Container
+        main_layout.addSpacing(15)
+        self.dynamic_layout = QVBoxLayout()
+        self.dynamic_inputs = []
+        
+        main_layout.addLayout(self.dynamic_layout)
+        
         self.btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         self.btn_box.accepted.connect(self.accept)
         self.btn_box.rejected.connect(self.reject)
-        self.layout.addRow(self.btn_box)
+        main_layout.addWidget(self.btn_box)
+
+    def update_dynamic_fields(self, text):
+        try:
+            count = int(text)
+        except ValueError:
+            count = 0
+            
+        if count > 50: count = 50 
+            
+        while self.dynamic_layout.count():
+            item = self.dynamic_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+            
+        self.dynamic_inputs.clear()
+        
+        for i in range(count):
+            label_text = f"{self.dynamic_base_name} {i+1}"
+            lbl = QLabel(f"<b>{label_text}</b>")
+            txt = QTextEdit()
+            txt.setMaximumHeight(60)
+            
+            self.dynamic_layout.addWidget(lbl)
+            self.dynamic_layout.addWidget(txt)
+            self.dynamic_inputs.append((label_text, txt))
+            
+        self.adjustSize()
 
     def get_data(self):
-        data = {"Primary Name": self.name_input.text().strip()}
+        data = {
+            "Primary Name": self.name_input.text().strip(), 
+            "Priority": self.priority_combo.currentText(),
+            "Complexity": self.complexity_combo.currentText()
+        }
         for field, inp in self.inputs.items():
-            if isinstance(inp, QComboBox):
-                data[field] = inp.currentText()
-            elif isinstance(inp, QTextEdit):
-                data[field] = inp.toPlainText().strip()
-            else:
-                data[field] = inp.text().strip()
+            data[field] = inp.text().strip()
+                
+        for lbl_name, txt_widget in self.dynamic_inputs:
+            data[lbl_name] = txt_widget.toPlainText().strip()
+            
         return data
+
+class EditProjectDialog(QDialog):
+    def __init__(self, project_name, current_status, details_dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"✏️ Edit Project: {project_name}")
+        self.setMinimumWidth(800)
+        self.details_dict = details_dict
+        
+        main_layout = QVBoxLayout(self)
+        self.grid = QGridLayout()
+        self.inputs = {}
+        self.dynamic_base_name = "Detail"
+        
+        # Fixed Fields
+        self.grid.addWidget(QLabel("<b>Project Name</b>"), 0, 0)
+        name_inp = QLineEdit(project_name)
+        name_inp.setReadOnly(True)
+        self.grid.addWidget(name_inp, 0, 1)
+        
+        self.status_combo = QComboBox()
+        self.status_combo.addItems(["active", "hold", "additional info", "closed"])
+        idx = self.status_combo.findText(current_status, Qt.MatchFlag.MatchFixedString | Qt.MatchFlag.MatchCaseSensitive)
+        if idx >= 0: self.status_combo.setCurrentIndex(idx)
+        else: self.status_combo.setCurrentText(current_status)
+        self.grid.addWidget(QLabel("<b>Status</b>"), 0, 2)
+        self.grid.addWidget(self.status_combo, 0, 3)
+        
+        self.priority_combo = QComboBox()
+        self.priority_combo.addItems(["High", "Medium", "Low"])
+        self.priority_combo.setCurrentText(str(details_dict.get("Priority", "Medium")))
+        self.grid.addWidget(QLabel("<b>Priority</b>"), 0, 4)
+        self.grid.addWidget(self.priority_combo, 0, 5)
+        
+        self.complexity_combo = QComboBox()
+        self.complexity_combo.addItems(["High", "Medium", "Low"])
+        self.complexity_combo.setCurrentText(str(details_dict.get("Complexity", "Medium")))
+        self.grid.addWidget(QLabel("<b>Complexity</b>"), 1, 0)
+        self.grid.addWidget(self.complexity_combo, 1, 1)
+        
+        row, col = 1, 1
+        
+        standard_fields = []
+        for field, val in details_dict.items():
+            if field in ["_quick_links", "Priority", "Complexity"]: continue
+            if any(char.isdigit() for char in field) and "Detail" in field: continue
+            standard_fields.append((field, val))
+            
+        for field, val in standard_fields:
+            lbl = QLabel(f"<b>{field}</b>")
+            if "item" in field.lower():
+                inp = QLineEdit(str(val))
+                self.dynamic_base_name = field.replace("Item", "Detail").replace("item", "detail")
+                inp.textChanged.connect(self.update_dynamic_fields)
+            else:
+                inp = QLineEdit(str(val))
+                
+            self.inputs[field] = inp
+            self.grid.addWidget(lbl, row, col * 2)
+            self.grid.addWidget(inp, row, col * 2 + 1)
+            
+            col += 1
+            if col > 2:
+                col = 0
+                row += 1
+                
+        self.grid.setColumnStretch(1, 1)
+        self.grid.setColumnStretch(3, 1)
+        self.grid.setColumnStretch(5, 1)
+                
+        main_layout.addLayout(self.grid)
+        
+        # Dynamic Section
+        main_layout.addSpacing(15)
+        self.dynamic_layout = QVBoxLayout()
+        self.dynamic_inputs = []
+        main_layout.addLayout(self.dynamic_layout)
+        
+        for field in self.inputs:
+            if "item" in field.lower():
+                self.update_dynamic_fields(self.inputs[field].text())
+                break
+        
+        self.btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.btn_box.accepted.connect(self.accept)
+        self.btn_box.rejected.connect(self.reject)
+        main_layout.addWidget(self.btn_box)
+
+    def update_dynamic_fields(self, text):
+        try:
+            count = int(text)
+        except ValueError:
+            count = 0
+            
+        if count > 50: count = 50 
+            
+        while self.dynamic_layout.count():
+            item = self.dynamic_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+            
+        self.dynamic_inputs.clear()
+        
+        for i in range(count):
+            label_text = f"{self.dynamic_base_name} {i+1}"
+            lbl = QLabel(f"<b>{label_text}</b>")
+            txt = QTextEdit()
+            txt.setMaximumHeight(60)
+            if label_text in self.details_dict:
+                txt.setPlainText(self.details_dict[label_text])
+                
+            self.dynamic_layout.addWidget(lbl)
+            self.dynamic_layout.addWidget(txt)
+            self.dynamic_inputs.append((label_text, txt))
+            
+        self.adjustSize()
+
+    def get_data(self):
+        data = {
+            "Priority": self.priority_combo.currentText(),
+            "Complexity": self.complexity_combo.currentText()
+        }
+        for field, inp in self.inputs.items():
+            data[field] = inp.text().strip()
+                
+        for lbl_name, txt_widget in self.dynamic_inputs:
+            data[lbl_name] = txt_widget.toPlainText().strip()
+            
+        return self.status_combo.currentText(), data
 
 class NewTaskDialog(QDialog):
     def __init__(self, default_date, project_names, parent=None):
@@ -360,55 +700,6 @@ class NewTaskDialog(QDialog):
             "Project": self.project_combo.currentText(),
             "Notes": self.notes_input.toPlainText().strip()
         }
-
-class EditProjectDialog(QDialog):
-    def __init__(self, project_name, current_status, details_dict, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f"✏️ Edit Project: {project_name}")
-        self.setMinimumWidth(450)
-        self.layout = QFormLayout(self)
-        self.inputs = {}
-        
-        self.status_combo = QComboBox()
-        self.status_combo.addItems(["active", "hold", "additional info", "closed"])
-        
-        idx = self.status_combo.findText(current_status, Qt.MatchFlag.MatchFixedString | Qt.MatchFlag.MatchCaseSensitive)
-        if idx >= 0: self.status_combo.setCurrentIndex(idx)
-        else: self.status_combo.setCurrentText(current_status)
-        
-        self.layout.addRow("<b>Project Status</b>", self.status_combo)
-        
-        for field, val in details_dict.items():
-            if field == "_quick_links": continue
-            if "priority" in field.lower() or "complexity" in field.lower():
-                inp = QComboBox()
-                inp.addItems(["High", "Medium", "Low"])
-                inp.setCurrentText(str(val))
-            elif "description" in field.lower() or "notes" in field.lower():
-                inp = QTextEdit()
-                inp.setMaximumHeight(80)
-                inp.setPlainText(str(val))
-            else:
-                inp = QLineEdit()
-                inp.setText(str(val))
-            self.inputs[field] = inp
-            self.layout.addRow(field, inp)
-            
-        self.btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        self.btn_box.accepted.connect(self.accept)
-        self.btn_box.rejected.connect(self.reject)
-        self.layout.addRow(self.btn_box)
-
-    def get_data(self):
-        data = {}
-        for field, inp in self.inputs.items():
-            if isinstance(inp, QComboBox):
-                data[field] = inp.currentText()
-            elif isinstance(inp, QTextEdit):
-                data[field] = inp.toPlainText().strip()
-            else:
-                data[field] = inp.text().strip()
-        return self.status_combo.currentText(), data
 
 class EngineeringWorkspace(QMainWindow):
     def __init__(self):
@@ -572,7 +863,6 @@ class EngineeringWorkspace(QMainWindow):
         self.dash_proj_scroll.setWidget(self.dash_proj_inner)
         proj_layout.addWidget(self.dash_proj_scroll, stretch=3)
         
-        # --- Dashboard Quick Links Header ---
         ql_header_layout = QHBoxLayout()
         ql_header_layout.setContentsMargins(0, 10, 0, 5)
         ql_label = QLabel("🔗 Quick Links")
@@ -589,7 +879,7 @@ class EngineeringWorkspace(QMainWindow):
         ql_header_layout.addWidget(ql_label)
         ql_header_layout.addWidget(btn_dash_ql_add)
         ql_header_layout.addWidget(btn_dash_ql_del)
-        ql_header_layout.addStretch()  # Moved stretch to the end to pin buttons left
+        ql_header_layout.addStretch()
         proj_layout.addLayout(ql_header_layout)
         
         self.dash_ql_scroll = QScrollArea()
@@ -666,6 +956,7 @@ class EngineeringWorkspace(QMainWindow):
         all_tasks = database.get_all_tasks()
         filtered_tasks = [t for t in all_tasks if t[2] == status]
         dialog = TaskTableDialog(f"All {status.capitalize()} Tasks", filtered_tasks, self)
+        dialog.jump_requested.connect(self.jump_to_task)
         dialog.exec()
 
     def jump_to_project_from_dashboard(self, project_name):
@@ -725,63 +1016,63 @@ class EngineeringWorkspace(QMainWindow):
         self.btn_top_timeline.hide()
         self.btn_top_timeline.clicked.connect(self.trigger_top_timeline)
         
-        for btn in [self.btn_top_edit, self.btn_top_popup, self.btn_top_notes, self.btn_top_timeline]:
+        self.btn_top_pql = QPushButton("🔗")
+        self.btn_top_pql.setToolTip("Project Quick Links")
+        self.btn_top_pql.setFixedSize(30, 30)
+        self.btn_top_pql.hide()
+        self.btn_top_pql.clicked.connect(self.trigger_top_pql)
+        
+        for btn in [self.btn_top_edit, self.btn_top_popup, self.btn_top_notes, self.btn_top_timeline, self.btn_top_pql]:
             details_header_layout.addWidget(btn)
         details_header_layout.addStretch()
         right_layout.addLayout(details_header_layout)
 
-        self.details_group = QFrame()
-        self.details_group.setStyleSheet("QFrame { background-color: palette(alternate-base); border-radius: 5px; }")
-        self.details_layout = QFormLayout(self.details_group)
-        self.details_layout.addRow(QLabel("<i>Select a project to view details...</i>"))
-        right_layout.addWidget(self.details_group)
+        self.details_scroll = QScrollArea()
+        self.details_scroll.setWidgetResizable(True)
+        self.details_scroll.setStyleSheet("QScrollArea { border: none; background-color: palette(alternate-base); border-radius: 5px; }")
+        self.details_scroll.setMaximumHeight(300)
+        
+        placeholder = QFrame()
+        placeholder.setStyleSheet("background: transparent;")
+        pl_layout = QVBoxLayout(placeholder)
+        pl_layout.addWidget(QLabel("<i>Select a project to view details...</i>"))
+        self.details_scroll.setWidget(placeholder)
+        
+        right_layout.addWidget(self.details_scroll)
         right_layout.addSpacing(10)
         
-        # --- Project Quick Links UI ---
-        pql_header_layout = QHBoxLayout()
-        pql_header_layout.addWidget(QLabel("<b>🔗 Project Quick Links</b>"))
+        # --- File Explorer Style Header ---
+        file_header_layout = QHBoxLayout()
+        file_header_layout.addWidget(QLabel("<b>🗄️ Project Files</b>"))
         
-        self.btn_pql_add = QPushButton("+")
-        self.btn_pql_add.setFixedSize(25, 25)
-        self.btn_pql_add.clicked.connect(self.add_proj_quick_link)
+        self.btn_explorer_up = QPushButton("⬆️ Up")
+        self.btn_explorer_up.setFixedSize(60, 25)
+        self.btn_explorer_up.setEnabled(False)
+        self.btn_explorer_up.clicked.connect(self.explorer_go_up)
         
-        self.btn_pql_del = QPushButton("-")
-        self.btn_pql_del.setFixedSize(25, 25)
-        self.btn_pql_del.clicked.connect(self.del_proj_quick_link)
+        self.path_display = QLineEdit()
+        self.path_display.setReadOnly(False)
+        self.path_display.setStyleSheet("background: palette(base); border: 1px solid #3a3b45; padding: 2px 5px; border-radius: 4px;")
+        self.path_display.returnPressed.connect(self.navigate_to_path)
         
-        pql_header_layout.addWidget(self.btn_pql_add)
-        pql_header_layout.addWidget(self.btn_pql_del)
-        pql_header_layout.addStretch() # Moved stretch to the end to pin buttons left
-        right_layout.addLayout(pql_header_layout)
-
-        self.pql_scroll = QScrollArea()
-        self.pql_scroll.setMaximumHeight(65)
-        self.pql_scroll.setWidgetResizable(True)
-        self.pql_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-        
-        self.pql_inner = QWidget()
-        self.pql_inner.setStyleSheet("background: transparent;")
-        self.pql_layout = QHBoxLayout(self.pql_inner)
-        self.pql_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.pql_layout.setContentsMargins(0, 0, 0, 0)
-        self.pql_scroll.setWidget(self.pql_inner)
-        
-        right_layout.addWidget(self.pql_scroll)
-        right_layout.addSpacing(10)
-        # ------------------------------
-
-        right_layout.addWidget(QLabel("<b>🗄️ Project Files</b>"))
+        file_header_layout.addWidget(self.btn_explorer_up)
+        file_header_layout.addWidget(self.path_display)
+        right_layout.addLayout(file_header_layout)
         
         self.file_model = QFileSystemModel()
         self.file_model.setReadOnly(False) 
         self.file_model.setRootPath("")
-        
         self.file_model.fileRenamed.connect(lambda path, old_name, new_name: self.log_activity("RENAMED", f"'{old_name}' to '{new_name}' in {path}"))
         
         self.tree_view = QTreeView()
         self.tree_view.setModel(self.file_model)
         self.tree_view.setColumnWidth(0, 250)
         self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        
+        self.tree_view.setItemsExpandable(False)
+        self.tree_view.setRootIsDecorated(False)
+        self.tree_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        
         self.tree_view.customContextMenuRequested.connect(self.open_context_menu)
         self.tree_view.doubleClicked.connect(self.open_file_on_double_click)
         
@@ -819,17 +1110,25 @@ class EngineeringWorkspace(QMainWindow):
         
         btn_today_task = QPushButton("📅 Today")
         btn_today_task.setStyleSheet("background-color: #333333; font-weight: bold; padding: 5px; border-radius: 4px;")
-        btn_today_task.clicked.connect(lambda: self.task_calendar.setSelectedDate(QDate.currentDate()))
+        
+        btn_today_task.clicked.connect(lambda: (
+            self.task_calendar.setSelectedDate(QDate.currentDate()),
+            self.load_tasks_for_date(QDate.currentDate())
+        ))
         left_layout.addWidget(btn_today_task)
         
         left_layout.addSpacing(20)
         
         self.btn_pending_card = QPushButton("⏳ Pending Tasks\n0")
+        self.btn_pending_card.setMaximumWidth(180) 
+        
         self.btn_pending_card.setStyleSheet("QPushButton { background-color: #e3a83b; color: black; font-weight: bold; border-radius: 8px; padding: 15px; font-size: 14px; text-align: left; } QPushButton:hover { background-color: #c79230; }")
         self.btn_pending_card.clicked.connect(lambda: self.show_tasks_table('pending'))
         left_layout.addWidget(self.btn_pending_card)
 
         self.btn_completed_card = QPushButton("🏆 Completed Tasks\n0")
+        self.btn_completed_card.setMaximumWidth(180)
+        
         self.btn_completed_card.setStyleSheet("QPushButton { background-color: #28a745; color: white; font-weight: bold; border-radius: 8px; padding: 15px; font-size: 14px; text-align: left; } QPushButton:hover { background-color: #218838; }")
         self.btn_completed_card.clicked.connect(lambda: self.show_tasks_table('completed'))
         left_layout.addWidget(self.btn_completed_card)
@@ -882,12 +1181,12 @@ class EngineeringWorkspace(QMainWindow):
         layout.addLayout(header_layout)
 
         name_layout = QHBoxLayout()
-        name_layout.addWidget(QLabel("<b>User Name (For Greeting)</b>"))
+        name_layout.addWidget(QLabel("<b>👤 User Name (For Greeting)</b>"))
         self.name_input = QLineEdit(database.get_setting('user_name'))
         name_layout.addWidget(self.name_input)
         layout.addLayout(name_layout)
 
-        layout.addWidget(QLabel("<b>Main Workspace Directory</b>"))
+        layout.addWidget(QLabel("<b>📂 Main Workspace Directory</b>"))
         path_layout = QHBoxLayout()
         self.path_input = QLineEdit(database.get_setting('main_path'))
         self.path_input.setReadOnly(True)
@@ -902,6 +1201,7 @@ class EngineeringWorkspace(QMainWindow):
         settings_scroll.setWidgetResizable(True)
         settings_scroll.setStyleSheet("QScrollArea { border: none; }")
         settings_container = QWidget()
+        
         lists_layout = QGridLayout(settings_container)
         
         def create_list_panel(title, db_key, list_widget, row, col):
@@ -937,7 +1237,7 @@ class EngineeringWorkspace(QMainWindow):
         settings_scroll.setWidget(settings_container)
         layout.addWidget(settings_scroll)
         
-        self.cb_apply_existing = QCheckBox("Apply structural changes to existing projects (will overwrite/create files)")
+        self.cb_apply_existing = QCheckBox("Apply structural changes to existing projects (will aggressively delete removed fields)")
         self.cb_apply_existing.setStyleSheet("color: #e3a83b; font-weight: bold; margin-bottom: 5px;")
         layout.addWidget(self.cb_apply_existing)
 
@@ -957,7 +1257,27 @@ class EngineeringWorkspace(QMainWindow):
         list_widget.insertItem(new_row, item)
         list_widget.setCurrentRow(new_row)
 
-    # --- Quick Links (Dashboard & Projects) ---
+    # --- Quick Links Editing ---
+    def edit_dash_quick_link(self, old_name, old_url):
+        dialog = QuickLinkDialog(self)
+        dialog.setWindowTitle("✏️ Edit Quick Link")
+        dialog.name_input.setText(old_name)
+        dialog.path_input.setText(old_url)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_name, new_url = dialog.get_data()
+            if new_name and new_url:
+                qls = database.get_setting('quick_links')
+                old_entry = f"{old_name} | {old_url}"
+                new_entry = f"{new_name} | {new_url}"
+                if old_entry in qls:
+                    idx = qls.index(old_entry)
+                    qls[idx] = new_entry
+                else:
+                    qls.append(new_entry)
+                database.update_setting('quick_links', qls)
+                self.refresh_dashboard()
+
+    # --- Quick Links (Dashboard) ---
     def add_dash_quick_link(self):
         dialog = QuickLinkDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -971,61 +1291,16 @@ class EngineeringWorkspace(QMainWindow):
     def del_dash_quick_link(self):
         qls = database.get_setting('quick_links')
         if not qls: return
-        item, ok = QInputDialog.getItem(self, "❌ Delete Quick Link", "Select link to remove:", qls, 0, False)
-        if ok and item:
-            qls.remove(item)
+        
+        display_names = [item.split("|", 1)[0].strip() for item in qls]
+        item_name, ok = QInputDialog.getItem(self, "❌ Delete Quick Link", "Select link to remove:", display_names, 0, False)
+        if ok and item_name:
+            for ql in qls:
+                if ql.split("|", 1)[0].strip() == item_name:
+                    qls.remove(ql)
+                    break
             database.update_setting('quick_links', qls)
             self.refresh_dashboard()
-
-    def add_proj_quick_link(self):
-        if not self.current_loaded_project: return
-        dialog = QuickLinkDialog(self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            name, url = dialog.get_data()
-            if name and url:
-                proj_name, path, status, details = self.current_loaded_project
-                pqls = details.get("_quick_links", [])
-                pqls.append(f"{name} | {url}")
-                details["_quick_links"] = pqls
-                database.update_project_details(proj_name, status, details)
-                self.current_loaded_project = (proj_name, path, status, details)
-                self.refresh_proj_quick_links(proj_name, details)
-
-    def del_proj_quick_link(self):
-        if not self.current_loaded_project: return
-        proj_name, path, status, details = self.current_loaded_project
-        pqls = details.get("_quick_links", [])
-        if not pqls: return
-        
-        item, ok = QInputDialog.getItem(self, "❌ Delete Quick Link", "Select link to remove:", pqls, 0, False)
-        if ok and item:
-            pqls.remove(item)
-            details["_quick_links"] = pqls
-            database.update_project_details(proj_name, status, details)
-            self.current_loaded_project = (proj_name, path, status, details)
-            self.refresh_proj_quick_links(proj_name, details)
-
-    def refresh_proj_quick_links(self, proj_name, details):
-        while self.pql_layout.count():
-            item = self.pql_layout.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
-
-        pqls = details.get("_quick_links", [])
-        if not pqls:
-            lbl = QLabel("<i>No quick links added.</i>")
-            lbl.setStyleSheet("color: #858796;")
-            self.pql_layout.addWidget(lbl)
-        else:
-            for item in pqls:
-                parts = item.split("|", 1)
-                n = parts[0].strip()
-                u = parts[1].strip() if len(parts)>1 else ""
-                btn = QPushButton(n)
-                btn.setStyleSheet("background-color: #333333; padding: 5px 15px; border-radius: 4px;")
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.clicked.connect(lambda _, url=u: QDesktopServices.openUrl(QUrl(url) if url.startswith('http') else QUrl.fromLocalFile(url)))
-                self.pql_layout.addWidget(btn)
-        self.pql_layout.addStretch()
 
     # --- Actions & Logic ---
     def toggle_theme(self):
@@ -1058,9 +1333,52 @@ class EngineeringWorkspace(QMainWindow):
             else:
                 QMessageBox.warning(self, "Not Found", f"{file_type.title()} file not found.")
 
+    def navigate_to_path(self):
+        if not hasattr(self, 'current_project_base_path'): return
+        new_path = os.path.normpath(self.path_display.text().strip())
+        base = os.path.normpath(self.current_project_base_path)
+        
+        # Verify the manual path exists and is safely within the project folder
+        if os.path.exists(new_path) and os.path.isdir(new_path) and new_path.lower().startswith(base.lower()):
+            self.current_explorer_path = new_path
+            self.tree_view.setRootIndex(self.file_model.index(new_path))
+            self.update_explorer_up_button()
+        else:
+            QMessageBox.warning(self, "Invalid Path", "The specified path does not exist or is outside the current project.")
+            self.path_display.setText(os.path.normpath(self.current_explorer_path))
+
+    def update_explorer_up_button(self):
+        if not hasattr(self, 'current_explorer_path') or not hasattr(self, 'current_project_base_path'):
+            self.btn_explorer_up.setEnabled(False)
+            return
+            
+        curr = os.path.normpath(self.current_explorer_path).lower()
+        base = os.path.normpath(self.current_project_base_path).lower()
+        
+        is_deeper = len(curr) > len(base) and curr.startswith(base)
+        self.btn_explorer_up.setEnabled(is_deeper)
+        self.path_display.setText(os.path.normpath(self.current_explorer_path))
+
+    def explorer_go_up(self):
+        if hasattr(self, 'current_explorer_path') and hasattr(self, 'current_project_base_path'):
+            curr = os.path.normpath(self.current_explorer_path)
+            base = os.path.normpath(self.current_project_base_path).lower()
+            parent_dir = os.path.normpath(os.path.dirname(curr))
+            
+            # Prevent going up past the base project folder
+            if len(parent_dir) >= len(base) and parent_dir.lower().startswith(base):
+                self.current_explorer_path = parent_dir
+                self.tree_view.setRootIndex(self.file_model.index(parent_dir))
+                self.update_explorer_up_button()
+
     def open_file_on_double_click(self, index):
-        if not self.file_model.isDir(index):
-            file_path = self.file_model.filePath(index)
+        if self.file_model.isDir(index):
+            folder_path = os.path.normpath(self.file_model.filePath(index))
+            self.current_explorer_path = folder_path
+            self.tree_view.setRootIndex(self.file_model.index(folder_path))
+            self.update_explorer_up_button()
+        else:
+            file_path = os.path.normpath(self.file_model.filePath(index))
             self.log_activity("OPENED FILE", file_path)
             QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
 
@@ -1098,6 +1416,7 @@ class EngineeringWorkspace(QMainWindow):
         
         row, col = 0, 0
         for name, path, details_str, status in groups['active']:
+            
             card = ClickableFrame(name)
             card.clicked.connect(self.jump_to_project_from_dashboard)
             card.setMaximumHeight(110)
@@ -1105,7 +1424,7 @@ class EngineeringWorkspace(QMainWindow):
             
             c_layout = QVBoxLayout(card)
             c_layout.setSpacing(4)
-            c_layout.setContentsMargins(15, 12, 15, 12)
+            c_layout.setContentsMargins(15, 12, 15, 12) 
             
             title = QLabel(f"<h3 style='margin:0; padding:0;'>{name}</h3>")
             title.setStyleSheet("background: transparent; border: none;")
@@ -1144,10 +1463,8 @@ class EngineeringWorkspace(QMainWindow):
                 parts = item.split("|", 1)
                 n = parts[0].strip()
                 u = parts[1].strip() if len(parts)>1 else ""
-                btn = QPushButton(n)
-                btn.setStyleSheet("background-color: #333333; padding: 5px 15px; border-radius: 4px;")
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.clicked.connect(lambda _, url=u: QDesktopServices.openUrl(QUrl(url) if url.startswith('http') else QUrl.fromLocalFile(url)))
+                btn = QuickLinkButton(n, u)
+                btn.edit_requested.connect(self.edit_dash_quick_link)
                 self.dash_ql_layout.addWidget(btn)
         self.dash_ql_layout.addStretch()
 
@@ -1197,7 +1514,7 @@ class EngineeringWorkspace(QMainWindow):
             QMessageBox.warning(self, "Setup Required", "Please set a valid Main Workspace Directory in the Settings tab first.")
             return
 
-        dialog = DynamicFormDialog("Create New Project", "Project Name", database.get_setting('project_fields'), self)
+        dialog = DynamicFormDialog("Create New Project", database.get_setting('project_fields'), self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             data = dialog.get_data()
             project_name = data.pop("Primary Name")
@@ -1237,15 +1554,23 @@ class EngineeringWorkspace(QMainWindow):
                 database.update_project_timeline(project_name, new_data)
                 QMessageBox.information(self, "Saved", "Project timeline updated successfully.")
 
+    def trigger_top_pql(self):
+        if self.current_loaded_project:
+            proj_name, path, status, details = self.current_loaded_project
+            pqls = details.get("_quick_links", [])
+            dialog = ProjectQuickLinksDialog(proj_name, pqls, self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                new_pqls = dialog.get_data()
+                details["_quick_links"] = new_pqls
+                database.update_project_details(proj_name, status, details)
+                self.current_loaded_project = (proj_name, path, status, details)
+
     def load_project_files(self, item):
         if not item.flags() & Qt.ItemFlag.ItemIsSelectable:
             return 
         project_name = item.data(Qt.ItemDataRole.UserRole)
         for name, path, details_json, status in database.get_all_projects():
             if name == project_name:
-                while self.details_layout.count():
-                    child = self.details_layout.takeAt(0)
-                    if child.widget(): child.widget().deleteLater()
                 
                 details = json.loads(details_json) if details_json else {}
                 self.current_loaded_project = (name, path, status, details)
@@ -1253,18 +1578,80 @@ class EngineeringWorkspace(QMainWindow):
                 self.btn_top_popup.show()
                 self.btn_top_notes.show()
                 self.btn_top_timeline.show()
+                self.btn_top_pql.show()
+                
+                container_widget = QFrame()
+                container_widget.setStyleSheet("QFrame { background-color: palette(alternate-base); border-radius: 5px; }")
+                container_layout = QVBoxLayout(container_widget)
                 
                 status_color = "green" if status == 'active' else "red" if status == 'closed' else "#FFC107"
                 
-                self.details_layout.addRow("<b>Project Name:</b>", SelectableLabel(name))
-                self.details_layout.addRow("<b>Status:</b>", SelectableLabel(f"<span style='color:{status_color}'>{status.upper()}</span>"))
+                display_grid = QGridLayout()
+                display_grid.setSpacing(15)
+                
+                display_grid.addWidget(QLabel("<b>Project Name:</b>"), 0, 0)
+                display_grid.addWidget(SelectableLabel(name), 0, 1)
+                
+                display_grid.addWidget(QLabel("<b>Status:</b>"), 0, 2)
+                display_grid.addWidget(SelectableLabel(f"<span style='color:{status_color}'>{status.upper()}</span>"), 0, 3)
+                
+                p_val = details.pop("Priority", "Medium")
+                display_grid.addWidget(QLabel("<b>Priority:</b>"), 0, 4)
+                display_grid.addWidget(SelectableLabel(str(p_val)), 0, 5)
+                
+                c_val = details.pop("Complexity", "Medium")
+                display_grid.addWidget(QLabel("<b>Complexity:</b>"), 1, 0)
+                display_grid.addWidget(SelectableLabel(str(c_val)), 1, 1)
+                
+                dynamic_fields = {}
+                row, col = 1, 1 
                 
                 for key, val in details.items():
                     if key == "_quick_links": continue
-                    self.details_layout.addRow(f"<b>{key}:</b>", SelectableLabel(str(val)))
+                    
+                    if any(char.isdigit() for char in key) and "Detail" in key:
+                        dynamic_fields[key] = val
+                        continue
+                    
+                    display_grid.addWidget(QLabel(f"<b>{key}:</b>"), row, col * 2)
+                    display_grid.addWidget(SelectableLabel(str(val)), row, col * 2 + 1)
+                    
+                    col += 1
+                    if col > 2:
+                        col = 0
+                        row += 1
 
-                self.refresh_proj_quick_links(name, details)
-                self.tree_view.setRootIndex(self.file_model.setRootPath(path))
+                display_grid.setColumnStretch(1, 1)
+                display_grid.setColumnStretch(3, 1)
+                display_grid.setColumnStretch(5, 1)
+
+                details["Priority"] = p_val
+                details["Complexity"] = c_val
+                
+                container_layout.addLayout(display_grid)
+                
+                if dynamic_fields:
+                    container_layout.addSpacing(15)
+                    for key in sorted(dynamic_fields.keys()):
+                        val = dynamic_fields[key]
+                        lbl = QLabel(f"<b>{key}:</b>")
+                        val_lbl = SelectableLabel(str(val))
+                        val_lbl.setStyleSheet("background-color: rgba(255,255,255,0.05); padding: 5px; border-radius: 4px;")
+                        container_layout.addWidget(lbl)
+                        container_layout.addWidget(val_lbl)
+                        container_layout.addSpacing(5)
+
+                container_layout.addStretch()
+                
+                old_widget = self.details_scroll.takeWidget()
+                if old_widget:
+                    old_widget.deleteLater()
+                self.details_scroll.setWidget(container_widget)
+                
+                self.current_project_base_path = os.path.normpath(path)
+                self.current_explorer_path = self.current_project_base_path
+                self.tree_view.setRootIndex(self.file_model.setRootPath(self.current_project_base_path))
+                self.update_explorer_up_button()
                 break
 
     def open_edit_dialog(self, name, path, current_status, details):
@@ -1462,7 +1849,6 @@ class EngineeringWorkspace(QMainWindow):
                 self.display_task_details(item)
                 break
 
-    # --- Settings Logic ---
     def browse_main_path(self):
         path = QFileDialog.getExistingDirectory(self, "Select Main Workspace Directory")
         if path: self.path_input.setText(path)
@@ -1495,9 +1881,20 @@ class EngineeringWorkspace(QMainWindow):
         if self.cb_apply_existing.isChecked():
             for name, path, details_json, status in database.get_all_projects():
                 old_details = json.loads(details_json) if details_json else {}
+                
+                # Rebuild dict keeping only valid active fields from settings
                 new_details = {f: old_details.get(f, "") for f in fields}
+                
+                # Add back fixed mandatory parameters
+                if "Priority" in old_details: new_details["Priority"] = old_details["Priority"]
+                if "Complexity" in old_details: new_details["Complexity"] = old_details["Complexity"]
+                if "_quick_links" in old_details: new_details["_quick_links"] = old_details["_quick_links"]
+                
+                # Add back any dynamically spawned "Detail" fields
                 for k, v in old_details.items():
-                    if k not in new_details: new_details[k] = v
+                    if "Detail" in k and any(char.isdigit() for char in k):
+                        new_details[k] = v
+
                 database.update_project_details(name, status, new_details)
                 self.write_notepad_files(name, path, new_details)
                 

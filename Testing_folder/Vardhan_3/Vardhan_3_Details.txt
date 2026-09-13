@@ -1,11 +1,14 @@
 PROJECT DETAILS: Vardhan_3
 ========================================
 
-CLIENT NAME:
-boat
-
 PRIORITY:
 Low
+
+COMPLEXITY:
+Medium
+
+CLIENT NAME:
+boat
 
 CHARACTER:
 .005
@@ -15,4 +18,22 @@ No
 
 PROJECT DESCRIPTION:
 My project
+
+LINE ITEM:
+3
+
+TEST1:
+
+
+TEST:
+
+
+LINE DETAIL 1:
+
+
+LINE DETAIL 2:
+
+
+LINE DETAIL 3:
+
 
