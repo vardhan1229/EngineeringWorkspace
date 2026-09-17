@@ -308,7 +308,7 @@ class TimelineDialog(QDialog):
 
         btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         btn_box.accepted.connect(self.accept)
-        self.btn_box.rejected.connect(self.reject)
+        btn_box.rejected.connect(self.reject)  # <-- Fixed line
         layout.addWidget(btn_box)
 
     def add_row(self, date_str, remarks):
