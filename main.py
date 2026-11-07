@@ -676,15 +676,15 @@ class DynamicFormDialog(QDialog):
             txt2 = QLineEdit()
             
             row_layout = QVBoxLayout()
-            v1 = QVBoxLayout()
-            v1.addWidget(lbl1)
-            v1.addWidget(txt1)
             v2 = QVBoxLayout()
             v2.addWidget(lbl2)
             v2.addWidget(txt2)
+            v1 = QVBoxLayout()
+            v1.addWidget(lbl1)
+            v1.addWidget(txt1)
             
-            row_layout.addLayout(v1)
             row_layout.addLayout(v2)
+            row_layout.addLayout(v1)
             
             self.dynamic_layout.addLayout(row_layout)
             self.dynamic_inputs.append((label_text, txt1, char_text, txt2))
@@ -782,7 +782,18 @@ class EditProjectDialog(QDialog):
         
         for field in self.inputs:
             if "item" in field.lower():
-                self.update_dynamic_fields(self.inputs[field].text())
+                val_text = self.inputs[field].text().strip()
+                if not val_text or val_text == "0":
+                    max_idx = 0
+                    for k in details_dict.keys():
+                        if any(char.isdigit() for char in k) and ("Detail" in k or "Characteristic" in k):
+                            idx_digits = ''.join(filter(str.isdigit, k))
+                            if idx_digits.isdigit():
+                                max_idx = max(max_idx, int(idx_digits))
+                    if max_idx > 0:
+                        self.inputs[field].setText(str(max_idx))
+                        val_text = str(max_idx)
+                self.update_dynamic_fields(val_text)
                 break
         
         self.btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -825,15 +836,15 @@ class EditProjectDialog(QDialog):
                 txt2.setText(self.details_dict[char_text])
                 
             row_layout = QVBoxLayout()
-            v1 = QVBoxLayout()
-            v1.addWidget(lbl1)
-            v1.addWidget(txt1)
             v2 = QVBoxLayout()
             v2.addWidget(lbl2)
             v2.addWidget(txt2)
+            v1 = QVBoxLayout()
+            v1.addWidget(lbl1)
+            v1.addWidget(txt1)
             
-            row_layout.addLayout(v1)
             row_layout.addLayout(v2)
+            row_layout.addLayout(v1)
             
             self.dynamic_layout.addLayout(row_layout)
             self.dynamic_inputs.append((label_text, txt1, char_text, txt2))
@@ -1439,7 +1450,6 @@ class EngineeringWorkspace(QMainWindow):
         for row in range(self.projects_table_widget.rowCount()):
             show_row = True
             
-            # Check column-specific filters
             for col, allowed_vals in self.active_column_filters.items():
                 item = self.projects_table_widget.item(row, col)
                 val = item.text() if item else ""
@@ -1447,7 +1457,6 @@ class EngineeringWorkspace(QMainWindow):
                     show_row = False
                     break
             
-            # Check global search query
             if show_row and query:
                 row_match = False
                 for c in range(self.projects_table_widget.columnCount()):
@@ -2092,19 +2101,19 @@ class EngineeringWorkspace(QMainWindow):
                     container_layout.addSpacing(15)
                     for idx_num in sorted(dynamic_pairs.keys(), key=lambda x: int(x) if x.isdigit() else 0):
                         pair = dynamic_pairs[idx_num]
-                        if 'detail' in pair:
-                            d_key, d_val = pair['detail']
-                            container_layout.addWidget(QLabel(f"<b>{d_key}:</b>"))
-                            v_lbl = SelectableLabel(str(d_val))
-                            v_lbl.setStyleSheet("background-color: rgba(255,255,255,0.05); padding: 5px; border-radius: 4px;")
-                            container_layout.addWidget(v_lbl)
-                            container_layout.addSpacing(3)
                         if 'char' in pair:
                             c_key, c_val = pair['char']
                             container_layout.addWidget(QLabel(f"<b>{c_key}:</b>"))
                             c_lbl = SelectableLabel(str(c_val))
                             c_lbl.setStyleSheet("background-color: rgba(255,255,255,0.05); padding: 5px; border-radius: 4px;")
                             container_layout.addWidget(c_lbl)
+                            container_layout.addSpacing(3)
+                        if 'detail' in pair:
+                            d_key, d_val = pair['detail']
+                            container_layout.addWidget(QLabel(f"<b>{d_key}:</b>"))
+                            v_lbl = SelectableLabel(str(d_val))
+                            v_lbl.setStyleSheet("background-color: rgba(255,255,255,0.05); padding: 5px; border-radius: 4px;")
+                            container_layout.addWidget(v_lbl)
                             container_layout.addSpacing(8)
 
                 container_layout.addStretch()
