@@ -2,6 +2,8 @@ import sys
 import os
 import shutil
 import json
+import sqlite3
+import subprocess
 from datetime import datetime
 import qdarktheme
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -10,10 +12,71 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QStackedWidget, QAbstractItemView, QFrame, QFormLayout, 
                              QLineEdit, QTextEdit, QDialog, QDialogButtonBox, QMenu, 
                              QScrollArea, QComboBox, QCalendarWidget, QGridLayout, QCheckBox, 
-                             QListWidgetItem, QDateEdit, QTableWidget, QTableWidgetItem, QHeaderView, QStyledItemDelegate)
-from PyQt6.QtCore import Qt, QUrl, QTimer, QTime, QDate, pyqtSignal
-from PyQt6.QtGui import QFileSystemModel, QDesktopServices, QAction, QTextCharFormat, QColor, QShortcut, QKeySequence
+                             QListWidgetItem, QDateEdit, QTableWidget, QTableWidgetItem, QHeaderView, 
+                             QStyledItemDelegate, QColorDialog)
+from PyQt6.QtCore import Qt, QUrl, QTimer, QTime, QDate, pyqtSignal, QIdentityProxyModel, QSortFilterProxyModel
+from PyQt6.QtGui import QFileSystemModel, QDesktopServices, QAction, QTextCharFormat, QColor, QShortcut, QKeySequence, QIcon, QPainter, QPixmap
 import database
+
+FOLDER_INFO_CACHE = {}
+
+def load_folder_info_cache():
+    FOLDER_INFO_CACHE.clear()
+    conn = sqlite3.connect(database.DB_NAME)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT path, info FROM folder_info")
+        for path, info in cursor.fetchall():
+            FOLDER_INFO_CACHE[path] = info
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+def get_parsed_info(path):
+    raw = FOLDER_INFO_CACHE.get(path, "")
+    if not raw: return {}
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict): return data
+    except Exception:
+        pass
+    return {"tooltip": raw}
+
+class FileSystemProxyModel(QIdentityProxyModel):
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return super().data(index, role)
+        
+        source_index = self.mapToSource(index)
+        path = os.path.normpath(self.sourceModel().filePath(source_index))
+        info = get_parsed_info(path)
+
+        if role == Qt.ItemDataRole.DisplayRole and index.column() == 3:
+            text = super().data(index, role)
+            if info.get('tooltip'):
+                return f"{text}   ℹ️"
+            return text
+            
+        if role == Qt.ItemDataRole.ToolTipRole:
+            if info.get('tooltip'):
+                return info.get('tooltip')
+            return super().data(index, role)
+            
+        if role == Qt.ItemDataRole.DecorationRole and index.column() == 0:
+            standard_icon = super().data(index, role)
+            color = info.get('color')
+            if color and isinstance(standard_icon, QIcon):
+                pixmap = standard_icon.pixmap(24, 24)
+                painter = QPainter(pixmap)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                painter.setBrush(QColor(color))
+                painter.setPen(QColor(0, 0, 0, 100))
+                painter.drawEllipse(12, 12, 10, 10)
+                painter.end()
+                return QIcon(pixmap)
+                
+        return super().data(index, role)
 
 class DoubleClickLabel(QLabel):
     doubleClicked = pyqtSignal()
@@ -86,6 +149,44 @@ class DateDelegate(QStyledItemDelegate):
 
     def setModelData(self, editor, model, index):
         model.setData(index, editor.date().toString("yyyy-MM-dd"), Qt.ItemDataRole.EditRole)
+
+class AssignColorDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("🎨 Assign Color")
+        self.setMinimumWidth(350)
+        layout = QVBoxLayout(self)
+        
+        self.color_list = QListWidget()
+        colors = database.get_setting('file_colors') or []
+        
+        item = QListWidgetItem("❌ Clear Color")
+        item.setData(Qt.ItemDataRole.UserRole, "")
+        self.color_list.addItem(item)
+        
+        for c in colors:
+            hex_val = c.get('hex', '#FFFFFF')
+            desc = c.get('desc', 'No description')
+            item = QListWidgetItem(f"⬛ {desc}")
+            
+            pixmap = QPixmap(16,16)
+            pixmap.fill(QColor(hex_val))
+            item.setIcon(QIcon(pixmap))
+            item.setData(Qt.ItemDataRole.UserRole, hex_val)
+            self.color_list.addItem(item)
+            
+        layout.addWidget(QLabel("Select a color to assign. Refer to descriptions for usage:"))
+        layout.addWidget(self.color_list)
+        
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+        
+    def get_selected_color(self):
+        item = self.color_list.currentItem()
+        if item: return item.data(Qt.ItemDataRole.UserRole)
+        return None
 
 class QuickLinkDialog(QDialog):
     def __init__(self, parent=None):
@@ -220,6 +321,67 @@ class ProjectQuickLinksDialog(QDialog):
     def get_data(self):
         return [self.list_widget.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list_widget.count())]
 
+class ExcelColumnFilterDialog(QDialog):
+    def __init__(self, column_name, all_values, current_selected, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Filter Column: {column_name}")
+        self.resize(320, 420)
+        layout = QVBoxLayout(self)
+        
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search values...")
+        self.search_input.textChanged.connect(self.filter_list)
+        layout.addWidget(self.search_input)
+        
+        btn_layout = QHBoxLayout()
+        self.btn_select_all = QPushButton("Select All")
+        self.btn_deselect_all = QPushButton("Clear All")
+        self.btn_select_all.clicked.connect(lambda: self.set_all(True))
+        self.btn_deselect_all.clicked.connect(lambda: self.set_all(False))
+        btn_layout.addWidget(self.btn_select_all)
+        btn_layout.addWidget(self.btn_deselect_all)
+        layout.addLayout(btn_layout)
+        
+        self.list_widget = QListWidget()
+        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        
+        for val in sorted(list(all_values)):
+            item = QListWidgetItem(str(val))
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            if current_selected is None or str(val) in current_selected:
+                item.setCheckState(Qt.CheckState.Checked)
+            else:
+                item.setCheckState(Qt.CheckState.Unchecked)
+            self.list_widget.addItem(item)
+            
+        layout.addWidget(self.list_widget)
+        
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+        
+    def set_all(self, state):
+        check_state = Qt.CheckState.Checked if state else Qt.CheckState.Unchecked
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if not item.isHidden():
+                item.setCheckState(check_state)
+                
+    def filter_list(self, text):
+        query = text.lower()
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            item.setHidden(query not in item.text().lower())
+            
+    def get_selected_values(self):
+        selected = set()
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                selected.add(item.text())
+        return selected
+
 class IterationDialog(QDialog):
     def __init__(self, existing_data=None, parent=None):
         super().__init__(parent)
@@ -308,7 +470,7 @@ class TimelineDialog(QDialog):
 
         btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         btn_box.accepted.connect(self.accept)
-        btn_box.rejected.connect(self.reject)  # <-- Fixed line
+        btn_box.rejected.connect(self.reject) 
         layout.addWidget(btn_box)
 
     def add_row(self, date_str, remarks):
@@ -430,7 +592,6 @@ class DynamicFormDialog(QDialog):
         self.inputs = {}
         self.dynamic_base_name = "Detail"
         
-        # Fixed Fields
         self.name_input = QLineEdit()
         self.grid.addWidget(QLabel("<b>Project Name *</b>"), 0, 0)
         self.grid.addWidget(self.name_input, 0, 1)
@@ -445,7 +606,6 @@ class DynamicFormDialog(QDialog):
         self.grid.addWidget(QLabel("<b>Complexity *</b>"), 0, 4)
         self.grid.addWidget(self.complexity_combo, 0, 5)
         
-        # Standard Fields 
         row, col = 1, 0
         
         for field in fields:
@@ -474,7 +634,6 @@ class DynamicFormDialog(QDialog):
 
         main_layout.addLayout(self.grid)
         
-        # Lower Section: Dynamic Form Container
         main_layout.addSpacing(15)
         self.dynamic_layout = QVBoxLayout()
         self.dynamic_inputs = []
@@ -496,19 +655,39 @@ class DynamicFormDialog(QDialog):
             
         while self.dynamic_layout.count():
             item = self.dynamic_layout.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
+            if item.layout():
+                while item.layout().count():
+                    child = item.layout().takeAt(0)
+                    if child.widget(): child.widget().deleteLater()
+                    if child.layout(): child.layout().deleteLater()
+                item.layout().deleteLater()
             
         self.dynamic_inputs.clear()
         
         for i in range(count):
             label_text = f"{self.dynamic_base_name} {i+1}"
-            lbl = QLabel(f"<b>{label_text}</b>")
-            txt = QTextEdit()
-            txt.setMaximumHeight(60)
+            char_text = f"Characteristic {i+1}"
             
-            self.dynamic_layout.addWidget(lbl)
-            self.dynamic_layout.addWidget(txt)
-            self.dynamic_inputs.append((label_text, txt))
+            lbl1 = QLabel(f"<b>{label_text}</b>")
+            txt1 = QTextEdit()
+            txt1.setMaximumHeight(60)
+            
+            lbl2 = QLabel(f"<b>{char_text}</b>")
+            txt2 = QLineEdit()
+            
+            row_layout = QVBoxLayout()
+            v1 = QVBoxLayout()
+            v1.addWidget(lbl1)
+            v1.addWidget(txt1)
+            v2 = QVBoxLayout()
+            v2.addWidget(lbl2)
+            v2.addWidget(txt2)
+            
+            row_layout.addLayout(v1)
+            row_layout.addLayout(v2)
+            
+            self.dynamic_layout.addLayout(row_layout)
+            self.dynamic_inputs.append((label_text, txt1, char_text, txt2))
             
         self.adjustSize()
 
@@ -521,8 +700,9 @@ class DynamicFormDialog(QDialog):
         for field, inp in self.inputs.items():
             data[field] = inp.text().strip()
                 
-        for lbl_name, txt_widget in self.dynamic_inputs:
+        for lbl_name, txt_widget, char_lbl, char_widget in self.dynamic_inputs:
             data[lbl_name] = txt_widget.toPlainText().strip()
+            data[char_lbl] = char_widget.text().strip()
             
         return data
 
@@ -538,7 +718,6 @@ class EditProjectDialog(QDialog):
         self.inputs = {}
         self.dynamic_base_name = "Detail"
         
-        # Fixed Fields
         self.grid.addWidget(QLabel("<b>Project Name</b>"), 0, 0)
         name_inp = QLineEdit(project_name)
         name_inp.setReadOnly(True)
@@ -569,7 +748,7 @@ class EditProjectDialog(QDialog):
         standard_fields = []
         for field, val in details_dict.items():
             if field in ["_quick_links", "Priority", "Complexity"]: continue
-            if any(char.isdigit() for char in field) and "Detail" in field: continue
+            if (any(char.isdigit() for char in field) and "Detail" in field) or ("Characteristic" in field): continue
             standard_fields.append((field, val))
             
         for field, val in standard_fields:
@@ -596,7 +775,6 @@ class EditProjectDialog(QDialog):
                 
         main_layout.addLayout(self.grid)
         
-        # Dynamic Section
         main_layout.addSpacing(15)
         self.dynamic_layout = QVBoxLayout()
         self.dynamic_inputs = []
@@ -622,21 +800,43 @@ class EditProjectDialog(QDialog):
             
         while self.dynamic_layout.count():
             item = self.dynamic_layout.takeAt(0)
-            if item.widget(): item.widget().deleteLater()
+            if item.layout():
+                while item.layout().count():
+                    child = item.layout().takeAt(0)
+                    if child.widget(): child.widget().deleteLater()
+                    if child.layout(): child.layout().deleteLater()
+                item.layout().deleteLater()
             
         self.dynamic_inputs.clear()
         
         for i in range(count):
             label_text = f"{self.dynamic_base_name} {i+1}"
-            lbl = QLabel(f"<b>{label_text}</b>")
-            txt = QTextEdit()
-            txt.setMaximumHeight(60)
+            char_text = f"Characteristic {i+1}"
+            
+            lbl1 = QLabel(f"<b>{label_text}</b>")
+            txt1 = QTextEdit()
+            txt1.setMaximumHeight(60)
             if label_text in self.details_dict:
-                txt.setPlainText(self.details_dict[label_text])
+                txt1.setPlainText(self.details_dict[label_text])
                 
-            self.dynamic_layout.addWidget(lbl)
-            self.dynamic_layout.addWidget(txt)
-            self.dynamic_inputs.append((label_text, txt))
+            lbl2 = QLabel(f"<b>{char_text}</b>")
+            txt2 = QLineEdit()
+            if char_text in self.details_dict:
+                txt2.setText(self.details_dict[char_text])
+                
+            row_layout = QVBoxLayout()
+            v1 = QVBoxLayout()
+            v1.addWidget(lbl1)
+            v1.addWidget(txt1)
+            v2 = QVBoxLayout()
+            v2.addWidget(lbl2)
+            v2.addWidget(txt2)
+            
+            row_layout.addLayout(v1)
+            row_layout.addLayout(v2)
+            
+            self.dynamic_layout.addLayout(row_layout)
+            self.dynamic_inputs.append((label_text, txt1, char_text, txt2))
             
         self.adjustSize()
 
@@ -648,8 +848,9 @@ class EditProjectDialog(QDialog):
         for field, inp in self.inputs.items():
             data[field] = inp.text().strip()
                 
-        for lbl_name, txt_widget in self.dynamic_inputs:
+        for lbl_name, txt_widget, char_lbl, char_widget in self.dynamic_inputs:
             data[lbl_name] = txt_widget.toPlainText().strip()
+            data[char_lbl] = char_widget.text().strip()
             
         return self.status_combo.currentText(), data
 
@@ -709,7 +910,9 @@ class EngineeringWorkspace(QMainWindow):
         self.current_theme = "dark"
         self.current_loaded_project = None
         self.highlighted_dates = []
+        self.active_column_filters = {}
         database.init_db()
+        load_folder_info_cache()
         
         self.undo_shortcut = QShortcut(QKeySequence.StandardKey.Undo, self)
         self.undo_shortcut.activated.connect(self.handle_undo)
@@ -765,7 +968,6 @@ class EngineeringWorkspace(QMainWindow):
         self.btn_tasks.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(2))
         self.btn_settings.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(3))
 
-    # --- ACTIVITY LOGGING ---
     def log_activity(self, action, details):
         main_path = database.get_setting('main_path')
         if main_path and os.path.isdir(main_path):
@@ -961,6 +1163,8 @@ class EngineeringWorkspace(QMainWindow):
 
     def jump_to_project_from_dashboard(self, project_name):
         self.stacked_widget.setCurrentIndex(1)
+        self.project_status_combo.setCurrentText("All")
+        self.filter_project_list()
         for i in range(self.project_list.count()):
             item = self.project_list.item(i)
             if item.data(Qt.ItemDataRole.UserRole) == project_name:
@@ -979,11 +1183,30 @@ class EngineeringWorkspace(QMainWindow):
         top_bar.addStretch()
         layout.addLayout(top_bar)
 
+        self.projects_stack = QStackedWidget()
+
+        split_view_widget = QWidget()
+        split_layout = QHBoxLayout(split_view_widget)
+        split_layout.setContentsMargins(0, 0, 0, 0)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
-        left_layout.addWidget(QLabel("<b>📂 Project List</b>"))
+        
+        list_header_layout = QHBoxLayout()
+        self.project_status_combo = QComboBox()
+        self.project_status_combo.addItems(["All", "Active", "Hold", "Additional Info", "Closed"])
+        self.project_status_combo.currentIndexChanged.connect(self.filter_project_list)
+        
+        self.btn_toggle_view = QPushButton("📊 Table View")
+        self.btn_toggle_view.setCheckable(True)
+        self.btn_toggle_view.clicked.connect(self.toggle_projects_view_mode)
+        
+        list_header_layout.addWidget(self.project_status_combo, stretch=2)
+        list_header_layout.addWidget(self.btn_toggle_view, stretch=1)
+        left_layout.addLayout(list_header_layout)
+
         self.project_list = QListWidget()
         self.project_list.itemClicked.connect(self.load_project_files)
         left_layout.addWidget(self.project_list)
@@ -1041,7 +1264,6 @@ class EngineeringWorkspace(QMainWindow):
         right_layout.addWidget(self.details_scroll)
         right_layout.addSpacing(10)
         
-        # --- File Explorer Style Header ---
         file_header_layout = QHBoxLayout()
         file_header_layout.addWidget(QLabel("<b>🗄️ Project Files</b>"))
         
@@ -1064,23 +1286,210 @@ class EngineeringWorkspace(QMainWindow):
         self.file_model.setRootPath("")
         self.file_model.fileRenamed.connect(lambda path, old_name, new_name: self.log_activity("RENAMED", f"'{old_name}' to '{new_name}' in {path}"))
         
+        self.proxy_model = FileSystemProxyModel()
+        self.proxy_model.setSourceModel(self.file_model)
+
         self.tree_view = QTreeView()
-        self.tree_view.setModel(self.file_model)
+        self.tree_view.setModel(self.proxy_model)
         self.tree_view.setColumnWidth(0, 250)
         self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        
         self.tree_view.setItemsExpandable(False)
         self.tree_view.setRootIsDecorated(False)
         self.tree_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        
         self.tree_view.customContextMenuRequested.connect(self.open_context_menu)
         self.tree_view.doubleClicked.connect(self.open_file_on_double_click)
         
         right_layout.addWidget(self.tree_view)
         splitter.addWidget(right_panel)
-        splitter.setSizes([250, 850])
-        layout.addWidget(splitter)
-        self.stacked_widget.addWidget(page) 
+        splitter.setSizes([300, 750])
+        split_layout.addWidget(splitter)
+
+        table_view_widget = QWidget()
+        table_layout = QVBoxLayout(table_view_widget)
+        
+        table_top_bar = QHBoxLayout()
+        table_top_bar.addWidget(QLabel("<b>🔍 Global Search:</b>"))
+        self.project_filter_input = QLineEdit()
+        self.project_filter_input.setPlaceholderText("Search across all fields...")
+        self.project_filter_input.textChanged.connect(self.filter_projects_table)
+        table_top_bar.addWidget(self.project_filter_input)
+        
+        btn_clear_filters = QPushButton("🔄 Clear All Filters")
+        btn_clear_filters.clicked.connect(self.clear_all_table_filters)
+        table_top_bar.addWidget(btn_clear_filters)
+        
+        btn_back_to_split = QPushButton("📂 Back to Split View")
+        btn_back_to_split.clicked.connect(lambda: self.btn_toggle_view.setChecked(False) or self.toggle_projects_view_mode(False))
+        table_top_bar.addWidget(btn_back_to_split)
+        table_layout.addLayout(table_top_bar)
+
+        self.projects_table_widget = QTableWidget()
+        self.projects_table_widget.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.projects_table_widget.horizontalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.projects_table_widget.horizontalHeader().customContextMenuRequested.connect(self.show_header_context_menu)
+        table_layout.addWidget(self.projects_table_widget)
+
+        self.projects_stack.addWidget(split_view_widget)
+        self.projects_stack.addWidget(table_view_widget)
+
+        layout.addWidget(self.projects_stack)
+        self.stacked_widget.addWidget(page)
+        
+        self.refresh_projects_list()
+
+    def toggle_projects_view_mode(self, checked):
+        if checked:
+            self.btn_toggle_view.setText("📂 List View")
+            self.refresh_projects_table()
+            self.projects_stack.setCurrentIndex(1)
+        else:
+            self.btn_toggle_view.setText("📊 Table View")
+            self.projects_stack.setCurrentIndex(0)
+
+    def refresh_projects_table(self):
+        projects = database.get_all_projects()
+        all_headers = ["Project Name", "Status", "Priority", "Complexity"]
+        parsed_projects = []
+        
+        for name, path, details_json, status in projects:
+            details = json.loads(details_json) if details_json else {}
+            row_data = {
+                "Project Name": name,
+                "Status": status.upper(),
+                "Priority": details.get("Priority", ""),
+                "Complexity": details.get("Complexity", "")
+            }
+            for k, v in details.items():
+                if k not in ["Priority", "Complexity", "_quick_links"]:
+                    if k not in all_headers:
+                        all_headers.append(k)
+                    row_data[k] = v
+            parsed_projects.append(row_data)
+
+        self.projects_table_widget.setColumnCount(len(all_headers))
+        self.projects_table_widget.setHorizontalHeaderLabels(all_headers)
+        self.projects_table_widget.setRowCount(len(parsed_projects))
+
+        for r_idx, r_data in enumerate(parsed_projects):
+            for c_idx, header in enumerate(all_headers):
+                val = str(r_data.get(header, ""))
+                self.projects_table_widget.setItem(r_idx, c_idx, QTableWidgetItem(val))
+
+        self.projects_table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.apply_table_filters()
+
+    def show_header_context_menu(self, pos):
+        header = self.projects_table_widget.horizontalHeader()
+        col = header.logicalIndexAt(pos)
+        if col < 0: return
+        col_name = header.model().headerData(col, Qt.Orientation.Horizontal)
+        
+        menu = QMenu(self)
+        filter_action = QAction(f"🔍 Filter '{col_name}'...", self)
+        clear_action = QAction(f"🔄 Clear Filter on '{col_name}'", self)
+        clear_all_action = QAction("🔄 Clear All Column Filters", self)
+        
+        filter_action.triggered.connect(lambda: self.open_column_filter_dialog(col, col_name))
+        clear_action.triggered.connect(lambda: self.clear_column_filter(col))
+        clear_all_action.triggered.connect(self.clear_all_table_filters)
+        
+        menu.addAction(filter_action)
+        if col in self.active_column_filters:
+            menu.addAction(clear_action)
+        menu.addSeparator()
+        menu.addAction(clear_all_action)
+        
+        menu.exec(header.mapToGlobal(pos))
+
+    def open_column_filter_dialog(self, col, col_name):
+        all_vals = set()
+        for row in range(self.projects_table_widget.rowCount()):
+            item = self.projects_table_widget.item(row, col)
+            if item:
+                all_vals.add(item.text())
+                
+        current_selected = self.active_column_filters.get(col, None)
+        dlg = ExcelColumnFilterDialog(col_name, all_vals, current_selected, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            selected = dlg.get_selected_values()
+            if len(selected) == len(all_vals):
+                if col in self.active_column_filters:
+                    del self.active_column_filters[col]
+            else:
+                self.active_column_filters[col] = selected
+            self.apply_table_filters()
+
+    def clear_column_filter(self, col):
+        if col in self.active_column_filters:
+            del self.active_column_filters[col]
+            self.apply_table_filters()
+
+    def clear_all_table_filters(self):
+        self.active_column_filters.clear()
+        if hasattr(self, 'project_filter_input'):
+            self.project_filter_input.clear()
+        self.apply_table_filters()
+
+    def filter_projects_table(self, text):
+        self.apply_table_filters()
+
+    def apply_table_filters(self):
+        query = self.project_filter_input.text().strip().lower() if hasattr(self, 'project_filter_input') else ""
+        
+        for row in range(self.projects_table_widget.rowCount()):
+            show_row = True
+            
+            # Check column-specific filters
+            for col, allowed_vals in self.active_column_filters.items():
+                item = self.projects_table_widget.item(row, col)
+                val = item.text() if item else ""
+                if val not in allowed_vals:
+                    show_row = False
+                    break
+            
+            # Check global search query
+            if show_row and query:
+                row_match = False
+                for c in range(self.projects_table_widget.columnCount()):
+                    it = self.projects_table_widget.item(row, c)
+                    if it and query in it.text().lower():
+                        row_match = True
+                        break
+                show_row = row_match
+                
+            self.projects_table_widget.setRowHidden(row, not show_row)
+
+    def filter_project_list(self):
+        self.refresh_projects_list()
+
+    def refresh_projects_list(self):
+        self.project_list.clear()
+        projects = database.get_all_projects()
+        selected_filter = self.project_status_combo.currentText().lower()
+        
+        groups = {'active': [], 'hold': [], 'additional info': [], 'closed': []}
+        for proj in projects:
+            s = proj[3].lower()
+            if s in groups: groups[s].append(proj)
+            else: groups['active'].append(proj)
+            
+        for g in groups.values():
+            g.sort(key=lambda x: x[0].lower())
+            
+        for s_key, title in [('active', 'ACTIVE'), ('hold', 'HOLD'), ('additional info', 'ADDITIONAL INFO'), ('closed', 'CLOSED')]:
+            if selected_filter != "all" and selected_filter != s_key:
+                continue
+            if groups[s_key]:
+                sep = QListWidgetItem(f"--- {title} ---")
+                sep.setFlags(Qt.ItemFlag.NoItemFlags)
+                sep.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                sep.setForeground(QColor("#4CC2FF"))
+                self.project_list.addItem(sep)
+                
+                for name, path, details_str, status in groups[s_key]:
+                    item = QListWidgetItem(name)
+                    item.setData(Qt.ItemDataRole.UserRole, name)
+                    self.project_list.addItem(item)
 
     def build_tasks_page(self):
         page = QWidget()
@@ -1110,25 +1519,21 @@ class EngineeringWorkspace(QMainWindow):
         
         btn_today_task = QPushButton("📅 Today")
         btn_today_task.setStyleSheet("background-color: #333333; font-weight: bold; padding: 5px; border-radius: 4px;")
-        
         btn_today_task.clicked.connect(lambda: (
             self.task_calendar.setSelectedDate(QDate.currentDate()),
             self.load_tasks_for_date(QDate.currentDate())
         ))
         left_layout.addWidget(btn_today_task)
-        
         left_layout.addSpacing(20)
         
         self.btn_pending_card = QPushButton("⏳ Pending Tasks\n0")
         self.btn_pending_card.setMaximumWidth(180) 
-        
         self.btn_pending_card.setStyleSheet("QPushButton { background-color: #e3a83b; color: black; font-weight: bold; border-radius: 8px; padding: 15px; font-size: 14px; text-align: left; } QPushButton:hover { background-color: #c79230; }")
         self.btn_pending_card.clicked.connect(lambda: self.show_tasks_table('pending'))
         left_layout.addWidget(self.btn_pending_card)
 
         self.btn_completed_card = QPushButton("🏆 Completed Tasks\n0")
         self.btn_completed_card.setMaximumWidth(180)
-        
         self.btn_completed_card.setStyleSheet("QPushButton { background-color: #28a745; color: white; font-weight: bold; border-radius: 8px; padding: 15px; font-size: 14px; text-align: left; } QPushButton:hover { background-color: #218838; }")
         self.btn_completed_card.clicked.connect(lambda: self.show_tasks_table('completed'))
         left_layout.addWidget(self.btn_completed_card)
@@ -1234,8 +1639,33 @@ class EngineeringWorkspace(QMainWindow):
         create_list_panel("Dashboard Card Fields", "dashboard_fields", self.dash_field_list, 1, 0)
         create_list_panel("Task Form Fields", "task_fields", self.task_field_list, 1, 1)
 
+        color_panel = QVBoxLayout()
+        color_panel.addWidget(QLabel("<b>🎨 File/Folder Colors</b>"))
+        
+        self.color_table = QTableWidget(0, 2)
+        self.color_table.setHorizontalHeaderLabels(["Color Hex", "Description"])
+        self.color_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.color_table.setMaximumHeight(150)
+        color_panel.addWidget(self.color_table)
+        
+        c_btn_layout = QHBoxLayout()
+        btn_add_color = QPushButton("➕ Add Color")
+        btn_del_color = QPushButton("❌ Remove Selected")
+        btn_add_color.clicked.connect(self.add_color_setting)
+        btn_del_color.clicked.connect(self.remove_color_setting)
+        c_btn_layout.addWidget(btn_add_color)
+        c_btn_layout.addWidget(btn_del_color)
+        color_panel.addLayout(c_btn_layout)
+        
+        lists_layout.addLayout(color_panel, 2, 0, 1, 2)
+
         settings_scroll.setWidget(settings_container)
         layout.addWidget(settings_scroll)
+        
+        colors = database.get_setting('file_colors')
+        if isinstance(colors, list):
+            for c in colors:
+                self.add_color_row(c.get('hex', '#FFFFFF'), c.get('desc', ''))
         
         self.cb_apply_existing = QCheckBox("Apply structural changes to existing projects (will aggressively delete removed fields)")
         self.cb_apply_existing.setStyleSheet("color: #e3a83b; font-weight: bold; margin-bottom: 5px;")
@@ -1248,6 +1678,29 @@ class EngineeringWorkspace(QMainWindow):
         layout.addWidget(btn_save)
         self.stacked_widget.addWidget(page)
 
+    def add_color_row(self, hex_val, desc):
+        row = self.color_table.rowCount()
+        self.color_table.insertRow(row)
+        color_item = QTableWidgetItem(hex_val)
+        color_item.setBackground(QColor(hex_val))
+        luminance = QColor(hex_val).value()
+        color_item.setForeground(QColor("black" if luminance > 128 else "white"))
+        self.color_table.setItem(row, 0, color_item)
+        self.color_table.setItem(row, 1, QTableWidgetItem(desc))
+        
+    def add_color_setting(self):
+        color = QColorDialog.getColor()
+        if color.isValid():
+            hex_val = color.name()
+            desc, ok = QInputDialog.getText(self, "Description", "Enter description for this color usage:")
+            if ok:
+                self.add_color_row(hex_val, desc)
+                
+    def remove_color_setting(self):
+        for item in self.color_table.selectedItems():
+            self.color_table.removeRow(item.row())
+            break
+
     def move_list_item(self, list_widget, direction):
         row = list_widget.currentRow()
         if row < 0: return
@@ -1257,7 +1710,6 @@ class EngineeringWorkspace(QMainWindow):
         list_widget.insertItem(new_row, item)
         list_widget.setCurrentRow(new_row)
 
-    # --- Quick Links Editing ---
     def edit_dash_quick_link(self, old_name, old_url):
         dialog = QuickLinkDialog(self)
         dialog.setWindowTitle("✏️ Edit Quick Link")
@@ -1277,7 +1729,6 @@ class EngineeringWorkspace(QMainWindow):
                 database.update_setting('quick_links', qls)
                 self.refresh_dashboard()
 
-    # --- Quick Links (Dashboard) ---
     def add_dash_quick_link(self):
         dialog = QuickLinkDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -1302,7 +1753,6 @@ class EngineeringWorkspace(QMainWindow):
             database.update_setting('quick_links', qls)
             self.refresh_dashboard()
 
-    # --- Actions & Logic ---
     def toggle_theme(self):
         self.current_theme = "light" if self.current_theme == "dark" else "dark"
         qdarktheme.setup_theme(self.current_theme)
@@ -1338,10 +1788,10 @@ class EngineeringWorkspace(QMainWindow):
         new_path = os.path.normpath(self.path_display.text().strip())
         base = os.path.normpath(self.current_project_base_path)
         
-        # Verify the manual path exists and is safely within the project folder
         if os.path.exists(new_path) and os.path.isdir(new_path) and new_path.lower().startswith(base.lower()):
             self.current_explorer_path = new_path
-            self.tree_view.setRootIndex(self.file_model.index(new_path))
+            source_idx = self.file_model.index(new_path)
+            self.tree_view.setRootIndex(self.proxy_model.mapFromSource(source_idx))
             self.update_explorer_up_button()
         else:
             QMessageBox.warning(self, "Invalid Path", "The specified path does not exist or is outside the current project.")
@@ -1365,20 +1815,21 @@ class EngineeringWorkspace(QMainWindow):
             base = os.path.normpath(self.current_project_base_path).lower()
             parent_dir = os.path.normpath(os.path.dirname(curr))
             
-            # Prevent going up past the base project folder
             if len(parent_dir) >= len(base) and parent_dir.lower().startswith(base):
                 self.current_explorer_path = parent_dir
-                self.tree_view.setRootIndex(self.file_model.index(parent_dir))
+                source_idx = self.file_model.index(parent_dir)
+                self.tree_view.setRootIndex(self.proxy_model.mapFromSource(source_idx))
                 self.update_explorer_up_button()
 
     def open_file_on_double_click(self, index):
-        if self.file_model.isDir(index):
-            folder_path = os.path.normpath(self.file_model.filePath(index))
+        source_index = self.proxy_model.mapToSource(index)
+        if self.file_model.isDir(source_index):
+            folder_path = os.path.normpath(self.file_model.filePath(source_index))
             self.current_explorer_path = folder_path
-            self.tree_view.setRootIndex(self.file_model.index(folder_path))
+            self.tree_view.setRootIndex(self.proxy_model.mapFromSource(source_index))
             self.update_explorer_up_button()
         else:
-            file_path = os.path.normpath(self.file_model.filePath(index))
+            file_path = os.path.normpath(self.file_model.filePath(source_index))
             self.log_activity("OPENED FILE", file_path)
             QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
 
@@ -1603,19 +2054,26 @@ class EngineeringWorkspace(QMainWindow):
                 display_grid.addWidget(QLabel("<b>Complexity:</b>"), 1, 0)
                 display_grid.addWidget(SelectableLabel(str(c_val)), 1, 1)
                 
-                dynamic_fields = {}
-                row, col = 1, 1 
+                standard_fields = {}
+                dynamic_pairs = {}
                 
                 for key, val in details.items():
                     if key == "_quick_links": continue
-                    
-                    if any(char.isdigit() for char in key) and "Detail" in key:
-                        dynamic_fields[key] = val
-                        continue
-                    
+                    if "Detail" in key and any(char.isdigit() for char in key):
+                        idx_num = ''.join(filter(str.isdigit, key))
+                        if idx_num not in dynamic_pairs: dynamic_pairs[idx_num] = {}
+                        dynamic_pairs[idx_num]['detail'] = (key, val)
+                    elif "Characteristic" in key and any(char.isdigit() for char in key):
+                        idx_num = ''.join(filter(str.isdigit, key))
+                        if idx_num not in dynamic_pairs: dynamic_pairs[idx_num] = {}
+                        dynamic_pairs[idx_num]['char'] = (key, val)
+                    else:
+                        standard_fields[key] = val
+
+                row, col = 1, 1 
+                for key, val in standard_fields.items():
                     display_grid.addWidget(QLabel(f"<b>{key}:</b>"), row, col * 2)
                     display_grid.addWidget(SelectableLabel(str(val)), row, col * 2 + 1)
-                    
                     col += 1
                     if col > 2:
                         col = 0
@@ -1630,16 +2088,24 @@ class EngineeringWorkspace(QMainWindow):
                 
                 container_layout.addLayout(display_grid)
                 
-                if dynamic_fields:
+                if dynamic_pairs:
                     container_layout.addSpacing(15)
-                    for key in sorted(dynamic_fields.keys()):
-                        val = dynamic_fields[key]
-                        lbl = QLabel(f"<b>{key}:</b>")
-                        val_lbl = SelectableLabel(str(val))
-                        val_lbl.setStyleSheet("background-color: rgba(255,255,255,0.05); padding: 5px; border-radius: 4px;")
-                        container_layout.addWidget(lbl)
-                        container_layout.addWidget(val_lbl)
-                        container_layout.addSpacing(5)
+                    for idx_num in sorted(dynamic_pairs.keys(), key=lambda x: int(x) if x.isdigit() else 0):
+                        pair = dynamic_pairs[idx_num]
+                        if 'detail' in pair:
+                            d_key, d_val = pair['detail']
+                            container_layout.addWidget(QLabel(f"<b>{d_key}:</b>"))
+                            v_lbl = SelectableLabel(str(d_val))
+                            v_lbl.setStyleSheet("background-color: rgba(255,255,255,0.05); padding: 5px; border-radius: 4px;")
+                            container_layout.addWidget(v_lbl)
+                            container_layout.addSpacing(3)
+                        if 'char' in pair:
+                            c_key, c_val = pair['char']
+                            container_layout.addWidget(QLabel(f"<b>{c_key}:</b>"))
+                            c_lbl = SelectableLabel(str(c_val))
+                            c_lbl.setStyleSheet("background-color: rgba(255,255,255,0.05); padding: 5px; border-radius: 4px;")
+                            container_layout.addWidget(c_lbl)
+                            container_layout.addSpacing(8)
 
                 container_layout.addStretch()
                 
@@ -1650,7 +2116,9 @@ class EngineeringWorkspace(QMainWindow):
                 
                 self.current_project_base_path = os.path.normpath(path)
                 self.current_explorer_path = self.current_project_base_path
-                self.tree_view.setRootIndex(self.file_model.setRootPath(self.current_project_base_path))
+                
+                source_idx = self.file_model.setRootPath(self.current_project_base_path)
+                self.tree_view.setRootIndex(self.proxy_model.mapFromSource(source_idx))
                 self.update_explorer_up_button()
                 break
 
@@ -1674,27 +2142,21 @@ class EngineeringWorkspace(QMainWindow):
                     break
 
     def open_context_menu(self, position):
-        index = self.tree_view.indexAt(position)
-        if not index.isValid(): return
+        proxy_index = self.tree_view.indexAt(position)
+        if not proxy_index.isValid(): return
         
-        raw_path = self.file_model.filePath(index)
+        source_index = self.proxy_model.mapToSource(proxy_index)
+        raw_path = self.file_model.filePath(source_index)
         file_path = os.path.normpath(raw_path)
-        is_dir = self.file_model.isDir(index)
+        is_dir = self.file_model.isDir(source_index)
         
-        current_info = database.get_folder_info(file_path)
-        if not current_info:
-            current_info = database.get_folder_info(raw_path)
-            
+        parsed_info = get_parsed_info(file_path)
         is_iteration = False
         iter_data = {}
-        try:
-            if current_info:
-                data = json.loads(current_info)
-                if isinstance(data, dict) and "Iteration count" in data:
-                    is_iteration = True
-                    iter_data = data
-        except:
-            pass
+        
+        if "Iteration count" in parsed_info:
+            is_iteration = True
+            iter_data = parsed_info
 
         menu = QMenu()
         actions = {}
@@ -1702,17 +2164,49 @@ class EngineeringWorkspace(QMainWindow):
         actions["🔄 Create Iteration"] = lambda: self.create_iteration(file_path, is_dir)
         if is_iteration:
             actions["⚙️ Edit Iteration Details"] = lambda: self.edit_iteration_details(file_path, iter_data)
+        
+        if not is_dir:
+            actions["🖥️ Open with..."] = lambda: subprocess.Popen(f'rundll32.exe shell32.dll,OpenAs_RunDLL "{file_path}"')
+        
+        actions["🎨 Assign Color"] = lambda: self.assign_color(file_path)
+        actions["ℹ️ Add/Edit Info Text"] = lambda: self.edit_tooltip_info(file_path)
             
-        actions["ℹ️ Folder/File Info"] = lambda: self.edit_folder_info(file_path, current_info)
         actions["📁 Open in File Explorer"] = lambda: (self.log_activity("OPENED DIRECTORY", raw_path), QDesktopServices.openUrl(QUrl.fromLocalFile(raw_path)))
-        actions["✏️ Rename"] = lambda: self.tree_view.edit(index)
+        actions["✏️ Rename"] = lambda: self.tree_view.edit(proxy_index)
         actions["📋 Copy"] = lambda: self.copy_file_dir(file_path, is_dir)
         actions["✂️ Move"] = lambda: self.move_file_dir(file_path)
-        actions["🗑️ Delete"] = lambda: self.delete_file_dir(file_path, index)
+        actions["🗑️ Delete"] = lambda: self.delete_file_dir(file_path, source_index)
         
         for text in actions.keys(): menu.addAction(QAction(text, self))
         action = menu.exec(self.tree_view.viewport().mapToGlobal(position))
         if action and action.text() in actions: actions[action.text()]()
+
+    def assign_color(self, file_path):
+        dialog = AssignColorDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            color = dialog.get_selected_color()
+            info = get_parsed_info(file_path)
+            
+            if color == "":
+                if 'color' in info: del info['color']
+            else:
+                info['color'] = color
+                
+            new_str = json.dumps(info)
+            database.set_folder_info(file_path, new_str)
+            FOLDER_INFO_CACHE[file_path] = new_str
+            self.proxy_model.layoutChanged.emit()
+
+    def edit_tooltip_info(self, file_path):
+        info = get_parsed_info(file_path)
+        current_tt = info.get('tooltip', '')
+        new_text, ok = QInputDialog.getMultiLineText(self, "ℹ️ Info Text", f"Enter info/tooltip text for:\n{os.path.basename(file_path)}", current_tt)
+        if ok:
+            info['tooltip'] = new_text.strip()
+            new_str = json.dumps(info)
+            database.set_folder_info(file_path, new_str)
+            FOLDER_INFO_CACHE[file_path] = new_str
+            self.proxy_model.layoutChanged.emit()
 
     def create_iteration(self, file_path, is_dir):
         base_dir = file_path if is_dir else os.path.dirname(file_path)
@@ -1724,9 +2218,12 @@ class EngineeringWorkspace(QMainWindow):
             
             try:
                 os.makedirs(new_folder_path, exist_ok=True)
-                database.set_folder_info(new_folder_path, json.dumps(data))
+                new_str = json.dumps(data)
+                database.set_folder_info(new_folder_path, new_str)
+                FOLDER_INFO_CACHE[new_folder_path] = new_str
                 self.log_activity("CREATED ITERATION", new_folder_path)
                 QMessageBox.information(self, "Success", f"Iteration folder '{folder_name}' created.")
+                self.proxy_model.layoutChanged.emit()
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to create folder: {str(e)}")
 
@@ -1734,12 +2231,12 @@ class EngineeringWorkspace(QMainWindow):
         dialog = IterationDialog(existing_data=existing_data, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_data = dialog.get_data()
-            database.set_folder_info(file_path, json.dumps(new_data))
+            info = get_parsed_info(file_path)
+            info.update(new_data)
+            new_str = json.dumps(info)
+            database.set_folder_info(file_path, new_str)
+            FOLDER_INFO_CACHE[file_path] = new_str
             QMessageBox.information(self, "Updated", "Iteration details updated successfully.")
-
-    def edit_folder_info(self, file_path, current_info):
-        new_info, ok = QInputDialog.getMultiLineText(self, "Information", f"Details for:\n{os.path.basename(file_path)}", current_info)
-        if ok: database.set_folder_info(file_path, new_info.strip())
 
     def copy_file_dir(self, file_path, is_dir):
         dest = QFileDialog.getExistingDirectory(self, "Select Destination")
@@ -1760,12 +2257,11 @@ class EngineeringWorkspace(QMainWindow):
                 self.log_activity("MOVED", f"{file_path} -> {dest}")
             except Exception as e: QMessageBox.critical(self, "Error", str(e))
 
-    def delete_file_dir(self, file_path, index):
+    def delete_file_dir(self, file_path, source_index):
         if QMessageBox.question(self, "🗑️ Delete", f"Permanently delete {os.path.basename(file_path)}?") == QMessageBox.StandardButton.Yes:
-            self.file_model.remove(index)
+            self.file_model.remove(source_index)
             self.log_activity("DELETED", file_path)
 
-    # --- Tasks Logic ---
     def create_new_task(self):
         selected_date = self.task_calendar.selectedDate().toString(Qt.DateFormat.ISODate)
         projects = [p[0] for p in database.get_all_projects()]
@@ -1878,21 +2374,25 @@ class EngineeringWorkspace(QMainWindow):
         database.update_setting('dashboard_fields', [self.dash_field_list.item(i).text() for i in range(self.dash_field_list.count())])
         database.update_setting('task_fields', [self.task_field_list.item(i).text() for i in range(self.task_field_list.count())])
         
+        file_colors = []
+        for r in range(self.color_table.rowCount()):
+            c_hex = self.color_table.item(r, 0).text().strip()
+            c_desc = self.color_table.item(r, 1).text().strip()
+            file_colors.append({"hex": c_hex, "desc": c_desc})
+        database.update_setting('file_colors', file_colors)
+        
         if self.cb_apply_existing.isChecked():
             for name, path, details_json, status in database.get_all_projects():
                 old_details = json.loads(details_json) if details_json else {}
                 
-                # Rebuild dict keeping only valid active fields from settings
                 new_details = {f: old_details.get(f, "") for f in fields}
                 
-                # Add back fixed mandatory parameters
                 if "Priority" in old_details: new_details["Priority"] = old_details["Priority"]
                 if "Complexity" in old_details: new_details["Complexity"] = old_details["Complexity"]
                 if "_quick_links" in old_details: new_details["_quick_links"] = old_details["_quick_links"]
                 
-                # Add back any dynamically spawned "Detail" fields
                 for k, v in old_details.items():
-                    if "Detail" in k and any(char.isdigit() for char in k):
+                    if ("Detail" in k and any(char.isdigit() for char in k)) or ("Characteristic" in k):
                         new_details[k] = v
 
                 database.update_project_details(name, status, new_details)

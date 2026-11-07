@@ -30,7 +30,13 @@ def init_db():
         'task_fields': ["Task Name", "Associated Project", "Notes"],
         'quick_links': [],
         'main_path': "",
-        'user_name': "Engineer"
+        'user_name': "Engineer",
+        'file_colors': [
+            {"hex": "#FF5733", "desc": "Urgent / Action Required"},
+            {"hex": "#33FF57", "desc": "Approved / Completed"},
+            {"hex": "#3357FF", "desc": "Draft / WIP"},
+            {"hex": "#F3FF33", "desc": "Review / On Hold"}
+        ]
     }
 
     for key, val in defaults.items():
